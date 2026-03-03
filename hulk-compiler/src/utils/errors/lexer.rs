@@ -1,6 +1,4 @@
-use std::fmt;
-
-use crate::utils::errors::DisplayError;
+use super::DisplayError;
 
 /// Enum con todos los tipos de errores que puede producir el Lexer
 #[derive(Debug, Clone, PartialEq)]

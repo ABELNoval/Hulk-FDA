@@ -22,3 +22,8 @@
 // - EOF: fin de archivo
 //
 // =============================================================================
+
+pub mod token;
+
+// Re-exportar tipos principales para facilitar el uso
+pub use token::{Token, TokenType};

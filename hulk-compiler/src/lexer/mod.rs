@@ -31,15 +31,19 @@ pub use token::{Token, TokenType};
 use crate::lexer::token::{Token, TokenType};
 use crate::utils::errors::span::Span;
 
+// Estructura principal del lexer.
+// Aquí guardo todo el estado necesario para recorrer el input carácter por carácter.
 pub struct Lexer {
-    input: Vec<char>,
-    position: usize,
-    line: usize,
-    column: usize,
-    file: String,
+    input: Vec<char>,   // input convertido a vector de chars para acceso rápido
+    position: usize,    // posición actual dentro del input
+    line: usize,        // línea actual (para errores)
+    column: usize,      // columna actual (para errores)
+    file: String,       // nombre del archivo (para spans)
 }
 
 impl Lexer {
+    // Constructor del lexer.
+    // Inicializo todo y convierto el string en un vector de chars.
     pub fn new(input: String, file: String) -> Self {
         Self {
             input: input.chars().collect(),
@@ -54,19 +58,25 @@ impl Lexer {
     // CORE
     // =========================================================
 
+    // Esta es la función más importante: devuelve el siguiente token del input.
     pub fn next_token(&mut self) -> Token {
+        // Primero ignoro espacios y comentarios antes de procesar algo.
         self.skip_whitespace_and_comments();
 
+        // Guardo posición inicial del token (para el span)
         let start_line = self.line;
         let start_col = self.column;
 
+        // Si no hay más caracteres, retorno EOF
         let ch = match self.current_char() {
             Some(c) => c,
             None => return Token::eof(self.file.clone(), self.line, self.column),
         };
 
+        // Aquí hago el dispatch dependiendo del carácter actual
         match ch {
             // ===================== OPERADORES =====================
+            // Operadores simples (un solo carácter)
             '+' => self.simple_token(TokenType::Plus),
             '-' => self.simple_token(TokenType::Minus),
             '*' => self.simple_token(TokenType::Star),
@@ -80,7 +90,10 @@ impl Lexer {
             '|' => self.simple_token(TokenType::Pipe),
 
             // ===================== LOOKAHEAD =====================
+            // Operadores que pueden tener más de un carácter
+
             '=' => {
+                // == o =>
                 if self.peek() == Some('=') {
                     self.advance(); self.advance();
                     self.make_token("==", TokenType::EqualEqual, start_line, start_col)
@@ -94,6 +107,7 @@ impl Lexer {
             }
 
             '!' => {
+                // != o !
                 if self.peek() == Some('=') {
                     self.advance(); self.advance();
                     self.make_token("!=", TokenType::BangEqual, start_line, start_col)
@@ -104,6 +118,7 @@ impl Lexer {
             }
 
             '<' => {
+                // <= o <
                 if self.peek() == Some('=') {
                     self.advance(); self.advance();
                     self.make_token("<=", TokenType::LessEqual, start_line, start_col)
@@ -114,6 +129,7 @@ impl Lexer {
             }
 
             '>' => {
+                // >= o >
                 if self.peek() == Some('=') {
                     self.advance(); self.advance();
                     self.make_token(">=", TokenType::GreaterEqual, start_line, start_col)
@@ -124,6 +140,7 @@ impl Lexer {
             }
 
             ':' => {
+                // := o :
                 if self.peek() == Some('=') {
                     self.advance(); self.advance();
                     self.make_token(":=", TokenType::ColonEqual, start_line, start_col)
@@ -134,6 +151,7 @@ impl Lexer {
             }
 
             '@' => {
+                // @@ o @
                 if self.peek() == Some('@') {
                     self.advance(); self.advance();
                     self.make_token("@@", TokenType::AtAt, start_line, start_col)
@@ -144,6 +162,7 @@ impl Lexer {
             }
 
             // ===================== DELIMITADORES =====================
+            // Tokens estructurales del lenguaje
             '(' => self.simple_token(TokenType::LeftParen),
             ')' => self.simple_token(TokenType::RightParen),
             '{' => self.simple_token(TokenType::LeftBrace),
@@ -155,17 +174,21 @@ impl Lexer {
             '.' => self.simple_token(TokenType::Dot),
 
             // ===================== STRING =====================
+            // Si encuentro comillas, leo un string completo
             '"' => self.read_string(start_line, start_col),
 
             // ===================== NUMBER =====================
+            // Si empieza con número, leo número completo
             '0'..='9' => self.read_number(start_line, start_col),
 
             // ===================== IDENTIFIER =====================
+            // Letras o _ → identificador o keyword
             'a'..='z' | 'A'..='Z' | '_' => {
                 self.read_identifier(start_line, start_col)
             }
 
             // ===================== ERROR =====================
+            // Cualquier cosa que no reconozco
             _ => {
                 let msg = format!("Invalid character '{}'", ch);
                 self.advance();
@@ -178,9 +201,11 @@ impl Lexer {
     // READERS
     // =========================================================
 
+    // Lee identificadores o keywords
     fn read_identifier(&mut self, line: usize, col: usize) -> Token {
         let start = self.position;
 
+        // Consumo letras, números o _
         while let Some(c) = self.current_char() {
             if c.is_alphanumeric() || c == '_' {
                 self.advance();
@@ -189,22 +214,26 @@ impl Lexer {
             }
         }
 
+        // Construyo el lexeme
         let lexeme: String = self.input[start..self.position].iter().collect();
 
+        // Verifico si es keyword o identificador
         let token_type = TokenType::from_keyword(&lexeme)
             .unwrap_or(TokenType::Identifier(lexeme.clone()));
 
         self.make_token(&lexeme, token_type, line, col)
     }
 
+    // Lee números (enteros, decimales y científicos)
     fn read_number(&mut self, line: usize, col: usize) -> Token {
         let start = self.position;
 
+        // Parte entera
         while self.current_char().map_or(false, |c| c.is_ascii_digit()) {
             self.advance();
         }
 
-        // decimal
+        // Parte decimal
         if self.current_char() == Some('.') {
             self.advance();
             while self.current_char().map_or(false, |c| c.is_ascii_digit()) {
@@ -212,14 +241,16 @@ impl Lexer {
             }
         }
 
-        // scientific notation
+        // Notación científica (e o E)
         if matches!(self.current_char(), Some('e') | Some('E')) {
             self.advance();
 
+            // signo opcional
             if matches!(self.current_char(), Some('+') | Some('-')) {
                 self.advance();
             }
 
+            // debe haber al menos un número después
             if !self.current_char().map_or(false, |c| c.is_ascii_digit()) {
                 return self.error_token("Invalid scientific notation".into(), line, col);
             }
@@ -231,22 +262,25 @@ impl Lexer {
 
         let lexeme: String = self.input[start..self.position].iter().collect();
 
+        // Intento parsear a f64
         match lexeme.parse::<f64>() {
             Ok(value) => self.make_token(&lexeme, TokenType::Number(value), line, col),
             Err(_) => self.error_token("Invalid number format".into(), line, col),
         }
     }
 
+    // Lee strings con soporte de escapes
     fn read_string(&mut self, line: usize, col: usize) -> Token {
-        self.advance(); // skip "
+        self.advance(); // salto la comilla inicial
 
         let mut result = String::new();
 
         while let Some(c) = self.current_char() {
             match c {
-                '"' => break,
+                '"' => break, // fin del string
 
                 '\\' => {
+                    // manejo de escapes
                     self.advance();
                     match self.current_char() {
                         Some('n') => result.push('\n'),
@@ -264,6 +298,7 @@ impl Lexer {
                     }
                 }
 
+                // string sin cerrar
                 '\n' => return self.error_token("Unterminated string".into(), line, col),
 
                 _ => result.push(c),
@@ -272,11 +307,12 @@ impl Lexer {
             self.advance();
         }
 
+        // EOF sin cerrar string
         if self.current_char().is_none() {
             return self.error_token("Unterminated string".into(), line, col);
         }
 
-        self.advance(); // closing "
+        self.advance(); // salto comilla final
 
         self.make_token(&result, TokenType::String(result.clone()), line, col)
     }
@@ -285,26 +321,29 @@ impl Lexer {
     // COMMENTS + WHITESPACE
     // =========================================================
 
+    // Salta espacios y comentarios
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             match self.current_char() {
+                // espacios simples
                 Some(' ' | '\t' | '\r') => self.advance(),
 
+                // nueva línea
                 Some('\n') => {
                     self.line += 1;
                     self.column = 1;
                     self.position += 1;
                 }
 
+                // comentario de una línea
                 Some('/') if self.peek() == Some('/') => {
-                    // single-line
                     while self.current_char() != Some('\n') && self.current_char().is_some() {
                         self.advance();
                     }
                 }
 
+                // comentario multilínea
                 Some('/') if self.peek() == Some('*') => {
-                    // multi-line
                     self.advance(); self.advance();
 
                     while let Some(c) = self.current_char() {
@@ -325,6 +364,7 @@ impl Lexer {
     // HELPERS
     // =========================================================
 
+    // Para tokens de un solo carácter
     fn simple_token(&mut self, token_type: TokenType) -> Token {
         let ch = self.current_char().unwrap();
         let line = self.line;
@@ -335,6 +375,7 @@ impl Lexer {
         self.make_token(&ch.to_string(), token_type, line, col)
     }
 
+    // Construcción estándar de token con span
     fn make_token(
         &self,
         lexeme: &str,
@@ -355,6 +396,7 @@ impl Lexer {
         )
     }
 
+    // Token de error (mensaje en lexeme)
     fn error_token(&self, message: String, line: usize, col: usize) -> Token {
         Token::new(
             message,
@@ -363,14 +405,17 @@ impl Lexer {
         )
     }
 
+    // Devuelve carácter actual
     fn current_char(&self) -> Option<char> {
         self.input.get(self.position).copied()
     }
 
+    // Lookahead (sin consumir)
     fn peek(&self) -> Option<char> {
         self.input.get(self.position + 1).copied()
     }
 
+    // Avanza una posición actualizando línea/columna
     fn advance(&mut self) {
         if let Some(c) = self.current_char() {
             self.position += 1;
@@ -387,6 +432,7 @@ impl Lexer {
     // UTILIDAD
     // =========================================================
 
+    // Tokeniza todo el input hasta EOF
     pub fn tokenize(&mut self) -> Vec<Token> {
         let mut tokens = Vec::new();
 

@@ -55,7 +55,7 @@ impl Lexer {
     // =========================================================
 
     pub fn next_token(&mut self) -> Token {
-        self.skip_whitespace();
+        self.skip_whitespace_and_comments();
 
         let start_line = self.line;
         let start_col = self.column;
@@ -65,12 +65,14 @@ impl Lexer {
             None => return Token::eof(self.file.clone(), self.line, self.column),
         };
 
-        let token = match ch {
+        match ch {
             // ===================== OPERADORES =====================
             '+' => self.simple_token(TokenType::Plus),
             '-' => self.simple_token(TokenType::Minus),
             '*' => self.simple_token(TokenType::Star),
+
             '/' => self.simple_token(TokenType::Slash),
+
             '^' => self.simple_token(TokenType::Caret),
             '%' => self.simple_token(TokenType::Percent),
 
@@ -80,12 +82,10 @@ impl Lexer {
             // ===================== LOOKAHEAD =====================
             '=' => {
                 if self.peek() == Some('=') {
-                    self.advance();
-                    self.advance();
+                    self.advance(); self.advance();
                     self.make_token("==", TokenType::EqualEqual, start_line, start_col)
                 } else if self.peek() == Some('>') {
-                    self.advance();
-                    self.advance();
+                    self.advance(); self.advance();
                     self.make_token("=>", TokenType::Arrow, start_line, start_col)
                 } else {
                     self.advance();
@@ -95,8 +95,7 @@ impl Lexer {
 
             '!' => {
                 if self.peek() == Some('=') {
-                    self.advance();
-                    self.advance();
+                    self.advance(); self.advance();
                     self.make_token("!=", TokenType::BangEqual, start_line, start_col)
                 } else {
                     self.advance();
@@ -106,8 +105,7 @@ impl Lexer {
 
             '<' => {
                 if self.peek() == Some('=') {
-                    self.advance();
-                    self.advance();
+                    self.advance(); self.advance();
                     self.make_token("<=", TokenType::LessEqual, start_line, start_col)
                 } else {
                     self.advance();
@@ -117,8 +115,7 @@ impl Lexer {
 
             '>' => {
                 if self.peek() == Some('=') {
-                    self.advance();
-                    self.advance();
+                    self.advance(); self.advance();
                     self.make_token(">=", TokenType::GreaterEqual, start_line, start_col)
                 } else {
                     self.advance();
@@ -128,8 +125,7 @@ impl Lexer {
 
             ':' => {
                 if self.peek() == Some('=') {
-                    self.advance();
-                    self.advance();
+                    self.advance(); self.advance();
                     self.make_token(":=", TokenType::ColonEqual, start_line, start_col)
                 } else {
                     self.advance();
@@ -139,8 +135,7 @@ impl Lexer {
 
             '@' => {
                 if self.peek() == Some('@') {
-                    self.advance();
-                    self.advance();
+                    self.advance(); self.advance();
                     self.make_token("@@", TokenType::AtAt, start_line, start_col)
                 } else {
                     self.advance();
@@ -160,25 +155,23 @@ impl Lexer {
             '.' => self.simple_token(TokenType::Dot),
 
             // ===================== STRING =====================
-            '"' => return self.read_string(start_line, start_col),
+            '"' => self.read_string(start_line, start_col),
 
             // ===================== NUMBER =====================
-            '0'..='9' => return self.read_number(start_line, start_col),
+            '0'..='9' => self.read_number(start_line, start_col),
 
-            // ===================== IDENTIFIER / KEYWORD =====================
+            // ===================== IDENTIFIER =====================
             'a'..='z' | 'A'..='Z' | '_' => {
-                return self.read_identifier(start_line, start_col)
+                self.read_identifier(start_line, start_col)
             }
 
             // ===================== ERROR =====================
             _ => {
-                let lexeme = ch.to_string();
+                let msg = format!("Invalid character '{}'", ch);
                 self.advance();
-                self.make_token(&lexeme, TokenType::Invalid, start_line, start_col)
+                self.error_token(msg, start_line, start_col)
             }
-        };
-
-        token
+        }
     }
 
     // =========================================================
@@ -219,56 +212,118 @@ impl Lexer {
             }
         }
 
+        // scientific notation
+        if matches!(self.current_char(), Some('e') | Some('E')) {
+            self.advance();
+
+            if matches!(self.current_char(), Some('+') | Some('-')) {
+                self.advance();
+            }
+
+            if !self.current_char().map_or(false, |c| c.is_ascii_digit()) {
+                return self.error_token("Invalid scientific notation".into(), line, col);
+            }
+
+            while self.current_char().map_or(false, |c| c.is_ascii_digit()) {
+                self.advance();
+            }
+        }
+
         let lexeme: String = self.input[start..self.position].iter().collect();
 
-        let value = lexeme.parse::<f64>().unwrap_or(0.0);
-
-        self.make_token(&lexeme, TokenType::Number(value), line, col)
+        match lexeme.parse::<f64>() {
+            Ok(value) => self.make_token(&lexeme, TokenType::Number(value), line, col),
+            Err(_) => self.error_token("Invalid number format".into(), line, col),
+        }
     }
 
     fn read_string(&mut self, line: usize, col: usize) -> Token {
-        self.advance(); // skip opening "
+        self.advance(); // skip "
 
-        let start = self.position;
+        let mut result = String::new();
 
         while let Some(c) = self.current_char() {
-            if c == '"' {
-                break;
+            match c {
+                '"' => break,
+
+                '\\' => {
+                    self.advance();
+                    match self.current_char() {
+                        Some('n') => result.push('\n'),
+                        Some('t') => result.push('\t'),
+                        Some('"') => result.push('"'),
+                        Some('\\') => result.push('\\'),
+                        Some(other) => {
+                            return self.error_token(
+                                format!("Invalid escape sequence \\{}", other),
+                                line,
+                                col,
+                            )
+                        }
+                        None => return self.error_token("Unterminated escape".into(), line, col),
+                    }
+                }
+
+                '\n' => return self.error_token("Unterminated string".into(), line, col),
+
+                _ => result.push(c),
             }
-            if c == '\n' {
-                return self.make_token("", TokenType::Invalid, line, col);
-            }
+
             self.advance();
         }
 
         if self.current_char().is_none() {
-            return self.make_token("", TokenType::Invalid, line, col);
+            return self.error_token("Unterminated string".into(), line, col);
         }
-
-        let lexeme: String = self.input[start..self.position].iter().collect();
 
         self.advance(); // closing "
 
-        self.make_token(&lexeme, TokenType::String(lexeme.clone()), line, col)
+        self.make_token(&result, TokenType::String(result.clone()), line, col)
+    }
+
+    // =========================================================
+    // COMMENTS + WHITESPACE
+    // =========================================================
+
+    fn skip_whitespace_and_comments(&mut self) {
+        loop {
+            match self.current_char() {
+                Some(' ' | '\t' | '\r') => self.advance(),
+
+                Some('\n') => {
+                    self.line += 1;
+                    self.column = 1;
+                    self.position += 1;
+                }
+
+                Some('/') if self.peek() == Some('/') => {
+                    // single-line
+                    while self.current_char() != Some('\n') && self.current_char().is_some() {
+                        self.advance();
+                    }
+                }
+
+                Some('/') if self.peek() == Some('*') => {
+                    // multi-line
+                    self.advance(); self.advance();
+
+                    while let Some(c) = self.current_char() {
+                        if c == '*' && self.peek() == Some('/') {
+                            self.advance(); self.advance();
+                            break;
+                        }
+                        self.advance();
+                    }
+                }
+
+                _ => break,
+            }
+        }
     }
 
     // =========================================================
     // HELPERS
     // =========================================================
-
-    fn skip_whitespace(&mut self) {
-        while let Some(c) = self.current_char() {
-            match c {
-                ' ' | '\t' | '\r' => self.advance(),
-                '\n' => {
-                    self.line += 1;
-                    self.column = 1;
-                    self.position += 1;
-                }
-                _ => break,
-            }
-        }
-    }
 
     fn simple_token(&mut self, token_type: TokenType) -> Token {
         let ch = self.current_char().unwrap();
@@ -297,6 +352,14 @@ impl Lexer {
                 self.line,
                 self.column,
             ),
+        )
+    }
+
+    fn error_token(&self, message: String, line: usize, col: usize) -> Token {
+        Token::new(
+            message,
+            TokenType::Invalid,
+            Span::new(self.file.clone(), line, col, self.line, self.column),
         )
     }
 

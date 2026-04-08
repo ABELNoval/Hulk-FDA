@@ -27,8 +27,6 @@ pub mod token;
 
 // Re-exportar tipos principales para facilitar el uso
 pub use token::{Token, TokenType};
-
-use crate::lexer::token::{Token, TokenType};
 use crate::utils::errors::span::Span;
 
 // Estructura principal del lexer.

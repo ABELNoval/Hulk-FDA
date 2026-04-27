@@ -26,17 +26,26 @@
 pub mod token;
 
 // Re-exportar tipos principales para facilitar el uso
-pub use token::{Token, TokenType};
+use crate::utils::errors::lexer::LexerError;
 use crate::utils::errors::span::Span;
+use crate::utils::errors::DisplayError;
+pub use token::{Token, TokenType};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LexerDiagnostic {
+    pub error: LexerError,
+    pub span: Span,
+}
 
 // Estructura principal del lexer.
 // Aquí guardo todo el estado necesario para recorrer el input carácter por carácter.
 pub struct Lexer {
-    input: Vec<char>,   // input convertido a vector de chars para acceso rápido
-    position: usize,    // posición actual dentro del input
-    line: usize,        // línea actual (para errores)
-    column: usize,      // columna actual (para errores)
-    file: String,       // nombre del archivo (para spans)
+    input: Vec<char>, // input convertido a vector de chars para acceso rápido
+    position: usize,  // posición actual dentro del input
+    line: usize,      // línea actual (para errores)
+    column: usize,    // columna actual (para errores)
+    file: String,     // nombre del archivo (para spans)
+    errors: Vec<LexerDiagnostic>,
 }
 
 impl Lexer {
@@ -49,6 +58,7 @@ impl Lexer {
             line: 1,
             column: 1,
             file,
+            errors: Vec::new(),
         }
     }
 
@@ -89,14 +99,15 @@ impl Lexer {
 
             // ===================== LOOKAHEAD =====================
             // Operadores que pueden tener más de un carácter
-
             '=' => {
                 // == o =>
                 if self.peek() == Some('=') {
-                    self.advance(); self.advance();
+                    self.advance();
+                    self.advance();
                     self.make_token("==", TokenType::EqualEqual, start_line, start_col)
                 } else if self.peek() == Some('>') {
-                    self.advance(); self.advance();
+                    self.advance();
+                    self.advance();
                     self.make_token("=>", TokenType::Arrow, start_line, start_col)
                 } else {
                     self.advance();
@@ -107,7 +118,8 @@ impl Lexer {
             '!' => {
                 // != o !
                 if self.peek() == Some('=') {
-                    self.advance(); self.advance();
+                    self.advance();
+                    self.advance();
                     self.make_token("!=", TokenType::BangEqual, start_line, start_col)
                 } else {
                     self.advance();
@@ -118,7 +130,8 @@ impl Lexer {
             '<' => {
                 // <= o <
                 if self.peek() == Some('=') {
-                    self.advance(); self.advance();
+                    self.advance();
+                    self.advance();
                     self.make_token("<=", TokenType::LessEqual, start_line, start_col)
                 } else {
                     self.advance();
@@ -129,7 +142,8 @@ impl Lexer {
             '>' => {
                 // >= o >
                 if self.peek() == Some('=') {
-                    self.advance(); self.advance();
+                    self.advance();
+                    self.advance();
                     self.make_token(">=", TokenType::GreaterEqual, start_line, start_col)
                 } else {
                     self.advance();
@@ -140,7 +154,8 @@ impl Lexer {
             ':' => {
                 // := o :
                 if self.peek() == Some('=') {
-                    self.advance(); self.advance();
+                    self.advance();
+                    self.advance();
                     self.make_token(":=", TokenType::ColonEqual, start_line, start_col)
                 } else {
                     self.advance();
@@ -151,7 +166,8 @@ impl Lexer {
             '@' => {
                 // @@ o @
                 if self.peek() == Some('@') {
-                    self.advance(); self.advance();
+                    self.advance();
+                    self.advance();
                     self.make_token("@@", TokenType::AtAt, start_line, start_col)
                 } else {
                     self.advance();
@@ -181,16 +197,13 @@ impl Lexer {
 
             // ===================== IDENTIFIER =====================
             // Letras o _ → identificador o keyword
-            'a'..='z' | 'A'..='Z' | '_' => {
-                self.read_identifier(start_line, start_col)
-            }
+            'a'..='z' | 'A'..='Z' | '_' => self.read_identifier(start_line, start_col),
 
             // ===================== ERROR =====================
             // Cualquier cosa que no reconozco
             _ => {
-                let msg = format!("Invalid character '{}'", ch);
                 self.advance();
-                self.error_token(msg, start_line, start_col)
+                self.error_token(LexerError::UnexpectedCharacter(ch), start_line, start_col)
             }
         }
     }
@@ -216,8 +229,8 @@ impl Lexer {
         let lexeme: String = self.input[start..self.position].iter().collect();
 
         // Verifico si es keyword o identificador
-        let token_type = TokenType::from_keyword(&lexeme)
-            .unwrap_or(TokenType::Identifier(lexeme.clone()));
+        let token_type =
+            TokenType::from_keyword(&lexeme).unwrap_or(TokenType::Identifier(lexeme.clone()));
 
         self.make_token(&lexeme, token_type, line, col)
     }
@@ -250,7 +263,14 @@ impl Lexer {
 
             // debe haber al menos un número después
             if !self.current_char().map_or(false, |c| c.is_ascii_digit()) {
-                return self.error_token("Invalid scientific notation".into(), line, col);
+                let partial_number: String = self.input[start..self.position].iter().collect();
+                return self.error_token(
+                    LexerError::InvalidExponent {
+                        number: partial_number,
+                    },
+                    line,
+                    col,
+                );
             }
 
             while self.current_char().map_or(false, |c| c.is_ascii_digit()) {
@@ -263,7 +283,14 @@ impl Lexer {
         // Intento parsear a f64
         match lexeme.parse::<f64>() {
             Ok(value) => self.make_token(&lexeme, TokenType::Number(value), line, col),
-            Err(_) => self.error_token("Invalid number format".into(), line, col),
+            Err(_) => self.error_token(
+                LexerError::InvalidNumberFormat {
+                    number: lexeme,
+                    reason: "no se pudo parsear como f64".to_string(),
+                },
+                line,
+                col,
+            ),
         }
     }
 
@@ -287,17 +314,34 @@ impl Lexer {
                         Some('\\') => result.push('\\'),
                         Some(other) => {
                             return self.error_token(
-                                format!("Invalid escape sequence \\{}", other),
+                                LexerError::InvalidEscapeSequence {
+                                    found: other,
+                                    in_string: result.clone(),
+                                },
                                 line,
                                 col,
-                            )
+                            );
                         }
-                        None => return self.error_token("Unterminated escape".into(), line, col),
+                        None => {
+                            return self.error_token(
+                                LexerError::UnexpectedEOF {
+                                    expected: "secuencia de escape válida".to_string(),
+                                },
+                                line,
+                                col,
+                            );
+                        }
                     }
                 }
 
                 // string sin cerrar
-                '\n' => return self.error_token("Unterminated string".into(), line, col),
+                '\n' => {
+                    return self.error_token(
+                        LexerError::UnexpectedNewlineInString { line: self.line },
+                        line,
+                        col,
+                    );
+                }
 
                 _ => result.push(c),
             }
@@ -307,7 +351,14 @@ impl Lexer {
 
         // EOF sin cerrar string
         if self.current_char().is_none() {
-            return self.error_token("Unterminated string".into(), line, col);
+            return self.error_token(
+                LexerError::UnterminatedString {
+                    start_line: line,
+                    start_column: col,
+                },
+                line,
+                col,
+            );
         }
 
         self.advance(); // salto comilla final
@@ -342,14 +393,34 @@ impl Lexer {
 
                 // comentario multilínea
                 Some('/') if self.peek() == Some('*') => {
-                    self.advance(); self.advance();
+                    let comment_start_line = self.line;
+                    let comment_start_col = self.column;
+                    self.advance();
+                    self.advance();
+
+                    let mut closed = false;
 
                     while let Some(c) = self.current_char() {
                         if c == '*' && self.peek() == Some('/') {
-                            self.advance(); self.advance();
+                            self.advance();
+                            self.advance();
+                            closed = true;
                             break;
                         }
                         self.advance();
+                    }
+
+                    if !closed {
+                        self.report_error(
+                            LexerError::UnterminatedBlockComment {
+                                start_line: comment_start_line,
+                                start_column: comment_start_col,
+                                nesting_level: 1,
+                            },
+                            comment_start_line,
+                            comment_start_col,
+                        );
+                        break;
                     }
                 }
 
@@ -394,13 +465,22 @@ impl Lexer {
         )
     }
 
-    // Token de error (mensaje en lexeme)
-    fn error_token(&self, message: String, line: usize, col: usize) -> Token {
-        Token::new(
-            message,
-            TokenType::Invalid,
-            Span::new(self.file.clone(), line, col, self.line, self.column),
-        )
+    // Token de error + diagnóstico tipado para la fase de reporte
+    fn error_token(&mut self, error: LexerError, line: usize, col: usize) -> Token {
+        let span = Span::new(self.file.clone(), line, col, self.line, self.column);
+        let message = error.message();
+
+        self.errors.push(LexerDiagnostic {
+            error,
+            span: span.clone(),
+        });
+
+        Token::new(message, TokenType::Invalid, span)
+    }
+
+    fn report_error(&mut self, error: LexerError, line: usize, col: usize) {
+        let span = Span::new(self.file.clone(), line, col, self.line, self.column);
+        self.errors.push(LexerDiagnostic { error, span });
     }
 
     // Devuelve carácter actual
@@ -445,5 +525,19 @@ impl Lexer {
         }
 
         tokens
+    }
+
+    pub fn errors(&self) -> &[LexerDiagnostic] {
+        &self.errors
+    }
+
+    pub fn take_errors(&mut self) -> Vec<LexerDiagnostic> {
+        std::mem::take(&mut self.errors)
+    }
+
+    pub fn tokenize_with_errors(&mut self) -> (Vec<Token>, Vec<LexerDiagnostic>) {
+        let tokens = self.tokenize();
+        let errors = self.take_errors();
+        (tokens, errors)
     }
 }

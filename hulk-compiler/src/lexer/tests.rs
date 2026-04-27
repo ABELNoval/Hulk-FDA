@@ -16,6 +16,7 @@
 
 use crate::lexer::Lexer;
 use crate::lexer::token::TokenType;
+use crate::utils::errors::LexerError;
 
 // =========================================================
 // Helper para debug
@@ -184,9 +185,16 @@ fn test_invalid_character() {
     let input = "@#";
     let mut lexer = Lexer::new(input.into(), "test.hulk".into());
     let tokens = lexer.tokenize();
+    let errors = lexer.errors();
 
     assert_eq!(tokens[0].token_type, TokenType::At);
     assert_eq!(tokens[1].token_type, TokenType::Invalid);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].error, LexerError::UnexpectedCharacter('#'));
+    assert_eq!(errors[0].span.start_line, 1);
+    assert_eq!(errors[0].span.start_column, 2);
+    assert_eq!(errors[0].span.end_line, 1);
+    assert_eq!(errors[0].span.end_column, 3);
 }
 
 #[test]
@@ -194,8 +202,21 @@ fn test_unterminated_string() {
     let input = "\"hola";
     let mut lexer = Lexer::new(input.into(), "test.hulk".into());
     let tokens = lexer.tokenize();
+    let errors = lexer.errors();
 
     assert_eq!(tokens[0].token_type, TokenType::Invalid);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].error,
+        LexerError::UnterminatedString {
+            start_line: 1,
+            start_column: 1
+        }
+    );
+    assert_eq!(errors[0].span.start_line, 1);
+    assert_eq!(errors[0].span.start_column, 1);
+    assert_eq!(errors[0].span.end_line, 1);
+    assert_eq!(errors[0].span.end_column, 6);
 }
 
 #[test]
@@ -203,8 +224,43 @@ fn test_invalid_scientific_notation() {
     let input = "1.5e";
     let mut lexer = Lexer::new(input.into(), "test.hulk".into());
     let tokens = lexer.tokenize();
+    let errors = lexer.errors();
 
     assert_eq!(tokens[0].token_type, TokenType::Invalid);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].error,
+        LexerError::InvalidExponent {
+            number: "1.5e".to_string()
+        }
+    );
+    assert_eq!(errors[0].span.start_line, 1);
+    assert_eq!(errors[0].span.start_column, 1);
+    assert_eq!(errors[0].span.end_line, 1);
+    assert_eq!(errors[0].span.end_column, 5);
+}
+
+#[test]
+fn test_unterminated_block_comment_reports_diagnostic() {
+    let input = "/* comentario sin cierre";
+    let mut lexer = Lexer::new(input.into(), "test.hulk".into());
+    let (tokens, errors) = lexer.tokenize_with_errors();
+
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0].token_type, TokenType::Eof);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].error,
+        LexerError::UnterminatedBlockComment {
+            start_line: 1,
+            start_column: 1,
+            nesting_level: 1
+        }
+    );
+    assert_eq!(errors[0].span.start_line, 1);
+    assert_eq!(errors[0].span.start_column, 1);
+    assert_eq!(errors[0].span.end_line, 1);
+    assert!(errors[0].span.end_column > errors[0].span.start_column);
 }
 
 // =========================================================

@@ -29,6 +29,14 @@
 use crate::lexer::Token;
 use crate::lexer::TokenType;
 
+pub mod ast;
+pub use ast::{
+    AttributeDeclaration, BinaryOperator, Declaration, DeclarationKind, Expr, ExprKind,
+    FunctionDeclaration, Literal, Parameter, Program, ProtocolDeclaration, ProtocolMethodSignature,
+    TypeDeclaration, TypeMember, TypeReference, TypeReferenceKind, UnaryOperator,
+    VariableDeclaration,
+};
+
 // =============================================================================
 // TokenCursor - Sistema de navegación del flujo de tokens
 // =============================================================================

@@ -18,6 +18,11 @@ mod tests_parser {
     use crate::lexer::Token;
     use crate::lexer::TokenType;
     use crate::parser::TokenCursor;
+    use crate::parser::ast::{
+        BinaryOperator, Declaration, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal,
+        Program, ProtocolDeclaration, ProtocolMethodSignature, TypeDeclaration, TypeReference,
+        TypeReferenceKind,
+    };
     use crate::utils::errors::span::Span;
 
     // =========================================================================
@@ -226,5 +231,323 @@ mod tests_parser {
 
         // token_count() debe retornar el número total de tokens
         assert_eq!(cursor.token_count(), 4);
+    }
+
+    #[test]
+    fn test_program_ast_root() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 10);
+        let entry = Some(Expr::literal(Literal::Number(1.0), span.clone()));
+        let program = Program::new(Vec::new(), entry, span.clone());
+
+        assert!(program.declarations.is_empty());
+        assert!(program.entry_expression.is_some());
+        assert_eq!(program.span, span);
+    }
+
+    #[test]
+    fn test_expr_binary_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 5);
+        let left = Expr::literal(Literal::Number(2.0), span.clone());
+        let right = Expr::literal(Literal::Number(3.0), span.clone());
+        let expr = Expr::binary(left, BinaryOperator::Add, right, span.clone());
+
+        match expr.kind {
+            ExprKind::Binary { operator, .. } => assert_eq!(operator, BinaryOperator::Add),
+            _ => panic!("se esperaba un nodo binario"),
+        }
+        assert_eq!(expr.span, span);
+    }
+
+    #[test]
+    fn test_declaration_function_shape() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 15);
+        let return_type = TypeReference::new("Number".to_string(), span.clone());
+        let body = Expr::literal(Literal::Number(42.0), span.clone());
+        let function = Declaration::new(
+            DeclarationKind::Function(FunctionDeclaration {
+                name: "answer".to_string(),
+                parameters: Vec::new(),
+                return_type: Some(return_type),
+                body,
+            }),
+            span.clone(),
+        );
+
+        match function.kind {
+            DeclarationKind::Function(ref declaration) => {
+                assert_eq!(declaration.name, "answer");
+                assert!(declaration.parameters.is_empty());
+            }
+            _ => panic!("se esperaba una declaración de función"),
+        }
+        assert_eq!(function.span, span);
+    }
+
+    #[test]
+    fn test_if_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 20);
+        let condition = Expr::identifier("x".to_string(), span.clone());
+        let then_expr = Expr::literal(Literal::Number(1.0), span.clone());
+        let else_expr = Some(Expr::literal(Literal::Number(0.0), span.clone()));
+
+        let if_node = Expr::if_expr(condition, then_expr, vec![], else_expr, span.clone());
+
+        match if_node.kind {
+            ExprKind::If {
+                ref condition,
+                ref then_expr,
+                ref else_expr,
+                ..
+            } => {
+                assert!(matches!(condition.kind, ExprKind::Identifier(_)));
+                assert!(matches!(
+                    then_expr.kind,
+                    ExprKind::Literal(Literal::Number(1.0))
+                ));
+                assert!(else_expr.is_some());
+            }
+            _ => panic!("se esperaba una expresión if"),
+        }
+    }
+
+    #[test]
+    fn test_while_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 15);
+        let condition = Expr::identifier("keep_going".to_string(), span.clone());
+        let body = Expr::literal(Literal::Number(42.0), span.clone());
+
+        let while_node = Expr::while_expr(condition, body, span.clone());
+
+        match while_node.kind {
+            ExprKind::While {
+                ref condition,
+                ref body,
+            } => {
+                assert!(matches!(condition.kind, ExprKind::Identifier(_)));
+                assert!(matches!(body.kind, ExprKind::Literal(_)));
+            }
+            _ => panic!("se esperaba una expresión while"),
+        }
+    }
+
+    #[test]
+    fn test_for_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 15);
+        let iterable = Expr::identifier("items".to_string(), span.clone());
+        let body = Expr::identifier("i".to_string(), span.clone());
+
+        let for_node = Expr::for_expr("i".to_string(), iterable, body, span.clone());
+
+        match for_node.kind {
+            ExprKind::For {
+                ref variable,
+                ref iterable,
+                ref body,
+            } => {
+                assert_eq!(variable, "i");
+                assert!(matches!(iterable.kind, ExprKind::Identifier(_)));
+                assert!(matches!(body.kind, ExprKind::Identifier(_)));
+            }
+            _ => panic!("se esperaba una expresión for"),
+        }
+    }
+
+    #[test]
+    fn test_let_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 15);
+        let annotation = Some(TypeReference::new("Number".to_string(), span.clone()));
+        let value = Some(Expr::literal(Literal::Number(5.0), span.clone()));
+
+        let let_node = Expr::let_expr("x".to_string(), annotation.clone(), value, span.clone());
+
+        match &let_node.kind {
+            ExprKind::Let {
+                name,
+                annotation: ann,
+                value: val,
+            } => {
+                assert_eq!(name, "x");
+                assert!(ann.is_some());
+                assert!(val.is_some());
+            }
+            _ => panic!("se esperaba una expresión let"),
+        }
+    }
+
+    #[test]
+    fn test_member_access_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 10);
+        let object = Expr::identifier("obj".to_string(), span.clone());
+
+        let access = Expr::member_access(object, "property".to_string(), span.clone());
+
+        match &access.kind {
+            ExprKind::MemberAccess { object: _, member } => {
+                assert_eq!(member, "property");
+            }
+            _ => panic!("se esperaba member access"),
+        }
+    }
+
+    #[test]
+    fn test_type_check_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 10);
+        let expr = Expr::identifier("x".to_string(), span.clone());
+        let type_ref = TypeReference::new("Number".to_string(), span.clone());
+
+        let check = Expr::type_check(expr, type_ref, span.clone());
+
+        match &check.kind {
+            ExprKind::TypeCheck {
+                expr: _,
+                type_ref: tr,
+            } => {
+                assert_eq!(tr.display_name(), "Number");
+            }
+            _ => panic!("se esperaba type check"),
+        }
+    }
+
+    #[test]
+    fn test_new_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 10);
+        let type_ref = TypeReference::new("MyClass".to_string(), span.clone());
+        let arguments = vec![Expr::literal(Literal::Number(1.0), span.clone())];
+
+        let new_node = Expr::new_expr(type_ref.clone(), arguments, span.clone());
+
+        match &new_node.kind {
+            ExprKind::New {
+                type_ref: tr,
+                arguments: args,
+            } => {
+                assert_eq!(tr.display_name(), "MyClass");
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("se esperaba new expression"),
+        }
+    }
+
+    #[test]
+    fn test_vector_literal_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 10);
+        let elements = vec![
+            Expr::literal(Literal::Number(1.0), span.clone()),
+            Expr::literal(Literal::Number(2.0), span.clone()),
+        ];
+
+        let vector = Expr::vector_literal(elements, span.clone());
+
+        match vector.kind {
+            ExprKind::VectorLiteral(items) => assert_eq!(items.len(), 2),
+            _ => panic!("se esperaba vector literal"),
+        }
+    }
+
+    #[test]
+    fn test_vector_comprehension_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 20);
+        let element_expr = Expr::binary(
+            Expr::identifier("x".to_string(), span.clone()),
+            BinaryOperator::Power,
+            Expr::literal(Literal::Number(2.0), span.clone()),
+            span.clone(),
+        );
+        let iterable = Expr::identifier("numbers".to_string(), span.clone());
+
+        let vector =
+            Expr::vector_comprehension(element_expr, "x".to_string(), iterable, span.clone());
+
+        match vector.kind {
+            ExprKind::VectorComprehension { binding, .. } => assert_eq!(binding, "x"),
+            _ => panic!("se esperaba vector comprehension"),
+        }
+    }
+
+    #[test]
+    fn test_type_reference_iterable_and_vector() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 8);
+        let number = TypeReference::new("Number".to_string(), span.clone());
+        let iterable = TypeReference::iterable_of(number.clone(), span.clone());
+        let vector = TypeReference::vector_of(number, span.clone());
+
+        assert_eq!(iterable.display_name(), "Number*");
+        assert_eq!(vector.display_name(), "Number[]");
+        assert!(matches!(iterable.kind, TypeReferenceKind::Iterable(_)));
+        assert!(matches!(vector.kind, TypeReferenceKind::Vector(_)));
+    }
+
+    #[test]
+    fn test_protocol_method_signature_has_no_body() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 20);
+        let method = ProtocolMethodSignature {
+            name: "next".to_string(),
+            parameters: Vec::new(),
+            return_type: TypeReference::new("Boolean".to_string(), span.clone()),
+            span: span.clone(),
+        };
+        let protocol = ProtocolDeclaration {
+            name: "Iterable".to_string(),
+            extends: Vec::new(),
+            members: vec![method],
+        };
+
+        assert_eq!(protocol.members.len(), 1);
+        assert_eq!(protocol.members[0].name, "next");
+    }
+
+    #[test]
+    fn test_type_declaration_supports_parent_arguments() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 30);
+        let decl = TypeDeclaration {
+            name: "PolarPoint".to_string(),
+            parameters: Vec::new(),
+            inherits: Some(TypeReference::new("Point".to_string(), span.clone())),
+            parent_arguments: vec![Expr::literal(Literal::Number(1.0), span.clone())],
+            members: Vec::new(),
+        };
+
+        assert!(decl.inherits.is_some());
+        assert_eq!(decl.parent_arguments.len(), 1);
+    }
+
+    #[test]
+    fn test_self_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 5);
+        let self_node = Expr::self_expr(span.clone());
+
+        match self_node.kind {
+            ExprKind::Self_ => {
+                // Verificar que es self
+            }
+            _ => panic!("se esperaba self expression"),
+        }
+    }
+
+    #[test]
+    fn test_break_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 5);
+        let break_node = Expr::break_expr(span.clone());
+
+        match break_node.kind {
+            ExprKind::Break => {
+                // Verificar que es break
+            }
+            _ => panic!("se esperaba break expression"),
+        }
+    }
+
+    #[test]
+    fn test_return_expr_node() {
+        let span = Span::new("test".to_string(), 1, 1, 1, 10);
+        let value = Some(Expr::literal(Literal::Number(42.0), span.clone()));
+        let return_node = Expr::return_expr(value, span.clone());
+
+        match return_node.kind {
+            ExprKind::Return(ref val) => {
+                assert!(val.is_some());
+            }
+            _ => panic!("se esperaba return expression"),
+        }
     }
 }

@@ -241,6 +241,27 @@ fn test_invalid_scientific_notation() {
 }
 
 #[test]
+fn test_identifier_cannot_start_with_underscore() {
+    let input = "_x";
+    let mut lexer = Lexer::new(input.into(), "test.hulk".into());
+    let tokens = lexer.tokenize();
+    let errors = lexer.errors();
+
+    assert_eq!(tokens[0].token_type, TokenType::Invalid);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].error,
+        LexerError::IdentifierStartsWithUnderscore {
+            identifier: "_x".to_string()
+        }
+    );
+    assert_eq!(errors[0].span.start_line, 1);
+    assert_eq!(errors[0].span.start_column, 1);
+    assert_eq!(errors[0].span.end_line, 1);
+    assert_eq!(errors[0].span.end_column, 3);
+}
+
+#[test]
 fn test_unterminated_block_comment_reports_diagnostic() {
     let input = "/* comentario sin cierre";
     let mut lexer = Lexer::new(input.into(), "test.hulk".into());

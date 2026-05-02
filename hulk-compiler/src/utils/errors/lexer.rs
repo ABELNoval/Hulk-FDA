@@ -101,6 +101,10 @@ pub enum LexerError {
         max_length: usize,
     },
 
+    /// Identificador que empieza con guion bajo
+    /// Ejemplo: _x, _value
+    IdentifierStartsWithUnderscore { identifier: String },
+
     // ==================== OPERADORES ====================
     /// Operador incompleto o inválido
     /// Ejemplo: & cuando se esperaba &&
@@ -143,6 +147,7 @@ impl DisplayError for LexerError {
             LexerError::UnterminatedCharLiteral { .. } => "E0042",
             LexerError::IdentifierStartsWithDigit { .. } => "E0050",
             LexerError::IdentifierTooLong { .. } => "E0051",
+            LexerError::IdentifierStartsWithUnderscore { .. } => "E0052",
             LexerError::IncompleteOperator { .. } => "E0060",
             LexerError::UnexpectedEOF { .. } => "E0070",
             LexerError::InvalidUtf8 { .. } => "E0080",
@@ -249,6 +254,9 @@ impl DisplayError for LexerError {
                     identifier, max_length
                 )
             }
+            LexerError::IdentifierStartsWithUnderscore { identifier } => {
+                format!("identificador '{}' no puede empezar con '_'", identifier)
+            }
             LexerError::IncompleteOperator { found, expected } => {
                 format!(
                     "operador incompleto '{}', ¿quisiste escribir '{}'?",
@@ -297,6 +305,9 @@ impl DisplayError for LexerError {
             }
             LexerError::IdentifierStartsWithDigit { .. } => {
                 Some("los identificadores deben empezar con una letra o '_'".to_string())
+            }
+            LexerError::IdentifierStartsWithUnderscore { .. } => {
+                Some("los identificadores deben empezar con una letra, no con '_'".to_string())
             }
             _ => None,
         }

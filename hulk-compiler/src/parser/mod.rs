@@ -38,6 +38,47 @@ pub use ast::{
 };
 
 // =============================================================================
+// Parser - API común de alto nivel
+// =============================================================================
+
+#[derive(Debug, Clone)]
+pub struct Parser {
+    cursor: TokenCursor,
+}
+
+impl Parser {
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Self {
+            cursor: TokenCursor::new(tokens),
+        }
+    }
+
+    pub fn parse_program(&mut self) -> Program {
+        unimplemented!()
+    }
+
+    pub fn parse_declaration(&mut self) -> Option<Declaration> {
+        unimplemented!()
+    }
+
+    pub fn parse_expression(&mut self) -> Expr {
+        unimplemented!()
+    }
+
+    pub fn parse_type_reference(&mut self) -> TypeReference {
+        unimplemented!()
+    }
+
+    pub fn cursor(&self) -> &TokenCursor {
+        &self.cursor
+    }
+
+    pub fn cursor_mut(&mut self) -> &mut TokenCursor {
+        &mut self.cursor
+    }
+}
+
+// =============================================================================
 // TokenCursor - Sistema de navegación del flujo de tokens
 // =============================================================================
 //

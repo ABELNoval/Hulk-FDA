@@ -28,6 +28,7 @@
 
 use crate::lexer::Token;
 use crate::lexer::TokenType;
+use crate::utils::errors::ParserError;
 
 pub mod ast;
 pub use ast::{
@@ -75,6 +76,107 @@ impl Parser {
 
     pub fn cursor_mut(&mut self) -> &mut TokenCursor {
         &mut self.cursor
+    }
+
+    // =========================================================================
+    // Utilidades internas - Helpers para parsing
+    // =========================================================================
+
+    /// Reporta un error de parsing.
+    /// 
+    /// En una versión más completa, los errores se acumularían en un vector
+    /// para reportarlos todos al final. Por ahora los reportamos inmediatamente.
+    fn error(&mut self, error: ParserError) {
+        eprintln!("Parser error[{}]: {}", error.code(), error.message());
+        if let Some(help) = error.help() {
+            eprintln!("  = ayuda: {}", help);
+        }
+    }
+
+    /// Intenta consumir un token del tipo especificado.
+    /// 
+    /// Si el token actual coincide con el tipo esperado, lo consume y retorna Ok.
+    /// Si no coincide, reporta un error y retorna Err.
+    /// 
+    /// # Argumentos
+    /// * `token_type` - El tipo de token que se espera
+    /// 
+    /// # Retorna
+    /// `Ok(token)` si el token coincide, `Err(ParserError)` si no
+    fn expect(&mut self, token_type: TokenType) -> Result<Token, ParserError> {
+        if self.cursor.check(&token_type) {
+            Ok(self.cursor.advance())
+        } else {
+            let found = self.cursor.peek().lexeme.clone();
+            let expected = match &token_type {
+                TokenType::LeftBrace => "{",
+                TokenType::RightBrace => "}",
+                TokenType::LeftParen => "(",
+                TokenType::RightParen => ")",
+                TokenType::LeftBracket => "[",
+                TokenType::RightBracket => "]",
+                TokenType::Semicolon => ";",
+                TokenType::Comma => ",",
+                TokenType::Colon => ":",
+                TokenType::Equal => "=",
+                TokenType::ColonEqual => ":=",
+                TokenType::Arrow => "=>",
+                TokenType::Let => "let",
+                TokenType::If => "if",
+                TokenType::Elif => "elif",
+                TokenType::Else => "else",
+                TokenType::While => "while",
+                TokenType::For => "for",
+                TokenType::In => "in",
+                _ => &format!("{:?}", token_type),
+            };
+            
+            let error = ParserError::UnexpectedToken {
+                expected: expected.to_string(),
+                found,
+            };
+            self.error(error.clone());
+            Err(error)
+        }
+    }
+
+    /// Realiza recuperación de errores (error recovery).
+    /// 
+    /// Avanza tokens hasta encontrar un punto de sincronización seguro,
+    /// permitiendo que el parser continúe parseando después de un error.
+    /// 
+    /// Los puntos de sincronización típicos son:
+    /// - `;` (fin de expresión)
+    /// - `}` (fin de bloque)
+    /// - Palabras clave como `let`, `if`, `while`, `for`, `function`, etc.
+    fn synchronize(&mut self) {
+        self.cursor.advance();
+
+        while !self.cursor.is_at_end() {
+            // Si vemos un punto y coma, avanzamos una posición más y sincronizamos
+            if self.cursor.peek().token_type == TokenType::Semicolon {
+                self.cursor.advance();
+                return;
+            }
+
+            // Si vemos un token que comienza una nueva declaración/expresión,
+            // nos sincronizamos en ese punto
+            match self.cursor.peek().token_type {
+                TokenType::Let
+                | TokenType::Function
+                | TokenType::Type
+                | TokenType::Protocol
+                | TokenType::If
+                | TokenType::While
+                | TokenType::For
+                | TokenType::RightBrace => {
+                    return;
+                }
+                _ => {
+                    self.cursor.advance();
+                }
+            }
+        }
     }
 }
 

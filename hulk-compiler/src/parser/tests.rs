@@ -550,4 +550,311 @@ mod tests_parser {
             _ => panic!("se esperaba return expression"),
         }
     }
+
+    // =========================================================================
+    // Tests para parse_block() - Bloques de código
+    // =========================================================================
+
+    #[test]
+    fn test_parse_block_from_lexer() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "{ 5 }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::Block(exprs) => {
+                assert_eq!(exprs.len(), 1, "Bloque debe tener 1 expresión");
+            }
+            _ => panic!("Se esperaba Block, obtuvo {:?}", expr.kind),
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_block() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "{}";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::Block(exprs) => {
+                assert_eq!(exprs.len(), 0, "Bloque vacío debe tener 0 expresiones");
+            }
+            _ => panic!("Se esperaba Block"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multiple_expr_block() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "{ 5; 10; 15 }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::Block(exprs) => {
+                assert_eq!(exprs.len(), 3, "Bloque debe tener 3 expresiones");
+            }
+            _ => panic!("Se esperaba Block"),
+        }
+    }
+
+    // =========================================================================
+    // Tests para parse_let_binding() - Let expressions
+    // =========================================================================
+
+    #[test]
+    fn test_parse_simple_let() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "let x = 5";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::Let { name, value, annotation } => {
+                assert_eq!(name, "x", "Variable debe ser 'x'");
+                assert!(annotation.is_none(), "No debe haber anotación de tipo");
+                assert!(value.is_some(), "Debe haber un valor");
+            }
+            _ => panic!("Se esperaba Let, obtuvo {:?}", expr.kind),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_with_type_annotation() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        // Note: Este test no prueba la anotación de tipo completamente
+        // porque parse_type_reference() no está implementado
+        // Solo verificamos que la estructura Let se crea correctamente
+        let code = "let x = 5";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::Let { name, value, annotation: _ } => {
+                assert_eq!(name, "x");
+                assert!(value.is_some());
+            }
+            _ => panic!("Se esperaba Let con anotación"),
+        }
+    }
+
+    // =========================================================================
+    // Tests para parse_if_expr() - Condicionales
+    // =========================================================================
+
+    #[test]
+    fn test_parse_simple_if() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "if (true) { 5 }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::If {
+                condition: _,
+                then_expr: _,
+                elif_parts,
+                else_expr,
+            } => {
+                // La estructura se parsea correctamente
+                assert_eq!(elif_parts.len(), 0, "No debe haber elif");
+                assert!(else_expr.is_none(), "No debe haber else");
+            }
+            _ => panic!("Se esperaba If"),
+        }
+    }
+
+    #[test]
+    fn test_parse_if_else() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "if (true) { 1 } else { 2 }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::If {
+                condition: _,
+                then_expr: _,
+                elif_parts,
+                else_expr,
+            } => {
+                // Verificar estructura
+                assert_eq!(elif_parts.len(), 0);
+                assert!(else_expr.is_some(), "Debe haber else");
+            }
+            _ => panic!("Se esperaba If/else"),
+        }
+    }
+
+    #[test]
+    fn test_parse_if_elif_else() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "if (false) { 1 } elif (true) { 2 } else { 3 }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::If {
+                condition: _,
+                then_expr: _,
+                elif_parts,
+                else_expr,
+            } => {
+                // Verificar estructura
+                assert_eq!(elif_parts.len(), 1, "Debe haber 1 elif");
+                assert!(else_expr.is_some(), "Debe haber else");
+            }
+            _ => panic!("Se esperaba If/elif/else"),
+        }
+    }
+
+    // =========================================================================
+    // Tests para parse_while_expr() - While loops
+    // =========================================================================
+
+    #[test]
+    fn test_parse_simple_while() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "while (true) { 5 }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::While {
+                condition: _,
+                body: _,
+            } => {
+                // La estructura se parsea correctamente
+                // Ambos campos siempre existen (Box<Expr>)
+            }
+            _ => panic!("Se esperaba While"),
+        }
+    }
+
+    // =========================================================================
+    // Tests para parse_for_expr() - For loops
+    // =========================================================================
+
+    #[test]
+    fn test_parse_simple_for() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "for i in range(1, 10) { 5 }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::For {
+                variable,
+                iterable: _,
+                body: _,
+            } => {
+                assert_eq!(variable, "i", "Variable debe ser 'i'");
+                // iterable y body son Box<Expr>, siempre existen
+            }
+            _ => panic!("Se esperaba For"),
+        }
+    }
+
+    // =========================================================================
+    // Tests para parse_assignment_expr() - Asignaciones
+    // =========================================================================
+
+    #[test]
+    fn test_parse_simple_assignment() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "x := 5";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::Assignment { target, value } => {
+                // target y value son Box<Expr>, siempre existen
+                assert!(matches!(target.kind, ExprKind::Identifier(_)));
+                assert!(matches!(value.kind, ExprKind::Literal(Literal::Number(_))));
+            }
+            _ => panic!("Se esperaba Assignment"),
+        }
+    }
+
+    #[test]
+    fn test_parse_assignment_with_expression() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "x := y + 5";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+        
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        
+        match &expr.kind {
+            ExprKind::Assignment { target, value: _ } => {
+                // Target debe ser un identificador
+                if let ExprKind::Identifier(name) = &target.kind {
+                    assert_eq!(name, "x");
+                } else {
+                    panic!("Target debe ser identificador");
+                }
+            }
+            _ => panic!("Se esperaba Assignment"),
+        }
+    }
 }

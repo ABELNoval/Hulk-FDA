@@ -62,10 +62,75 @@ impl Parser {
     }
 
     pub fn parse_expression(&mut self) -> Expr {
+        self.parse_term()
+    }
+
+    fn parse_term(&mut self) -> Expr {
+        let mut expr = self.parse_factor();
+
+        while self.cursor.check_any(&[TokenType::Plus, TokenType::Minus]) {
+            let operator = self.cursor.advance();
+            let right = self.parse_factor();
+            let span = expr.span.merge(&right.span);
+            let op = BinaryOperator::from_token_type(&operator.token_type).unwrap();
+            expr = Expr::binary(expr, op, right, span);
+        }
+
+        expr
+    }
+
+    fn parse_factor(&mut self) -> Expr {
+        let mut expr = self.parse_power();
+
+        while self.cursor.check_any(&[TokenType::Star, TokenType::Slash, TokenType::Percent]) {
+            let operator = self.cursor.advance();
+            let right = self.parse_power();
+            let span = expr.span.merge(&right.span);
+            let op = BinaryOperator::from_token_type(&operator.token_type).unwrap();
+            expr = Expr::binary(expr, op, right, span);
+        }
+
+        expr
+    }
+
+    fn parse_power(&mut self) -> Expr {
+        let expr = self.parse_unary();
+
+        if self.cursor.check(&TokenType::Caret) {
+            let operator = self.cursor.advance();
+            let right = self.parse_power();
+            let span = expr.span.merge(&right.span);
+            let op = BinaryOperator::from_token_type(&operator.token_type).unwrap();
+            return Expr::binary(expr, op, right, span);
+        }
+
+        expr
+    }
+
+    fn parse_unary(&mut self) -> Expr {
+        if self.cursor.check_any(&[TokenType::Plus, TokenType::Minus]) {
+            let operator = self.cursor.advance();
+            let operand = self.parse_unary();
+            let span = operator.span.merge(&operand.span);
+            let op = UnaryOperator::from_token_type(&operator.token_type).unwrap();
+            return Expr::unary(op, operand, span);
+        }
+
         self.parse_primary()
     }
 
     fn parse_primary(&mut self) -> Expr {
+        if self.cursor.check(&TokenType::LeftParen) {
+            self.cursor.advance();
+            let expr = self.parse_expression();
+            if self.cursor.check(&TokenType::RightParen) {
+                self.cursor.advance();
+            } else {
+                panic!("Expected ')' after expression");
+            }
+            return expr;
+        }
+
         let token = self.cursor.advance();
         let span = token.span.clone();
 

@@ -108,7 +108,7 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Expr {
-        let mut expr = self.parse_term();
+        let mut expr = self.parse_concatenation();
 
         while self.cursor.check_any(&[
             TokenType::Less,
@@ -116,6 +116,20 @@ impl Parser {
             TokenType::Greater,
             TokenType::GreaterEqual,
         ]) {
+            let operator = self.cursor.advance();
+            let right = self.parse_concatenation();
+            let span = expr.span.merge(&right.span);
+            let op = BinaryOperator::from_token_type(&operator.token_type).unwrap();
+            expr = Expr::binary(expr, op, right, span);
+        }
+
+        expr
+    }
+
+    fn parse_concatenation(&mut self) -> Expr {
+        let mut expr = self.parse_term();
+
+        while self.cursor.check_any(&[TokenType::At, TokenType::AtAt]) {
             let operator = self.cursor.advance();
             let right = self.parse_term();
             let span = expr.span.merge(&right.span);

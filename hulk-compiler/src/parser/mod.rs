@@ -26,7 +26,10 @@
 //
 // =============================================================================
 
-use self::ast::{DeclarationKind, FunctionDeclaration, Parameter};
+use self::ast::{
+    AttributeDeclaration, DeclarationKind, FunctionDeclaration, Parameter, TypeDeclaration,
+    TypeMember,
+};
 use crate::lexer::Token;
 use crate::lexer::TokenType;
 use crate::utils::errors::DisplayError;
@@ -58,6 +61,8 @@ impl Parser {
     pub fn parse_declaration(&mut self) -> Option<Declaration> {
         if self.cursor.check(&TokenType::Function) {
             self.parse_function_declaration()
+        } else if self.cursor.check(&TokenType::Type) {
+            self.parse_type_declaration()
         } else {
             None
         }
@@ -181,6 +186,185 @@ impl Parser {
             }),
             span,
         ))
+    }
+
+    /// Parse una declaración de tipo top-level.
+    ///
+    /// Gramática (MVP):
+    /// type_decl = "type" identifier "(" parameters? ")"
+    ///             ["inherits" type_ref ["(" arguments? ")"]]
+    ///             "{" type_member* "}"
+    fn parse_type_declaration(&mut self) -> Option<Declaration> {
+        let type_token = match self.expect(TokenType::Type) {
+            Ok(token) => token,
+            Err(_) => return None,
+        };
+
+        let start_span = type_token.span;
+
+        let name_token = self.cursor.peek().clone();
+        let name = match &name_token.token_type {
+            TokenType::Identifier(name) => {
+                self.cursor.advance();
+                name.clone()
+            }
+            _ => {
+                self.error(ParserError::ExpectedTypeName);
+                self.synchronize();
+                return None;
+            }
+        };
+
+        if self.expect(TokenType::LeftParen).is_err() {
+            self.synchronize();
+            return None;
+        }
+
+        let parameters = self.parse_parameter_list();
+
+        let inherits = if self.cursor.match_token(&TokenType::Inherits) {
+            Some(self.parse_type_reference())
+        } else {
+            None
+        };
+
+        let parent_arguments = if inherits.is_some() && self.cursor.check(&TokenType::LeftParen) {
+            self.parse_argument_list()
+        } else {
+            Vec::new()
+        };
+
+        let members = if self.cursor.check(&TokenType::LeftBrace) {
+            self.parse_type_members()
+        } else {
+            self.error(ParserError::ExpectedTypeBody);
+            self.synchronize();
+            return None;
+        };
+
+        let end_span = members
+            .last()
+            .map(|member| match member {
+                TypeMember::Attribute(attribute) => attribute.span.clone(),
+                TypeMember::Method(function) => function.body.span.clone(),
+            })
+            .unwrap_or_else(|| self.cursor.peek().span.clone());
+
+        let span = start_span.merge(&end_span);
+
+        Some(Declaration::new(
+            DeclarationKind::Type(TypeDeclaration {
+                name,
+                parameters,
+                inherits,
+                parent_arguments,
+                members,
+            }),
+            span,
+        ))
+    }
+
+    /// Parsea los miembros dentro de una declaración de tipo.
+    fn parse_type_members(&mut self) -> Vec<TypeMember> {
+        let mut members = Vec::new();
+
+        if self.expect(TokenType::LeftBrace).is_err() {
+            return members;
+        }
+
+        while !self.cursor.check(&TokenType::RightBrace) && !self.cursor.is_at_end() {
+            if self.cursor.match_token(&TokenType::Semicolon) {
+                continue;
+            }
+
+            if self.cursor.check(&TokenType::Function) {
+                if let Some(declaration) = self.parse_function_declaration() {
+                    if let DeclarationKind::Function(function) = declaration.kind {
+                        members.push(TypeMember::Method(function));
+                    }
+                }
+            } else if matches!(self.cursor.peek().token_type, TokenType::Identifier(_)) {
+                if let Some(attribute) = self.parse_type_attribute() {
+                    members.push(TypeMember::Attribute(attribute));
+                }
+            } else {
+                self.error(ParserError::InvalidDeclaration {
+                    declaration_type: "type member".to_string(),
+                    context: "type body".to_string(),
+                });
+                self.synchronize();
+            }
+
+            self.cursor.match_token(&TokenType::Semicolon);
+        }
+
+        if self.expect(TokenType::RightBrace).is_err() {
+            self.synchronize();
+        }
+
+        members
+    }
+
+    /// Parsea un atributo dentro de un tipo.
+    fn parse_type_attribute(&mut self) -> Option<AttributeDeclaration> {
+        let name_token = self.cursor.peek().clone();
+        let name = match &name_token.token_type {
+            TokenType::Identifier(name) => {
+                self.cursor.advance();
+                name.clone()
+            }
+            _ => return None,
+        };
+
+        let annotation = if self.cursor.match_token(&TokenType::Colon) {
+            Some(self.parse_type_reference())
+        } else {
+            None
+        };
+
+        if self.expect(TokenType::Equal).is_err() {
+            self.synchronize();
+            return None;
+        }
+
+        let initializer = self.parse_expression();
+        let span = name_token.span.merge(&initializer.span);
+
+        Some(AttributeDeclaration {
+            name,
+            annotation,
+            initializer,
+            span,
+        })
+    }
+
+    /// Parsea una lista de argumentos entre paréntesis.
+    fn parse_argument_list(&mut self) -> Vec<Expr> {
+        let mut arguments = Vec::new();
+
+        if self.expect(TokenType::LeftParen).is_err() {
+            return arguments;
+        }
+
+        if self.cursor.match_token(&TokenType::RightParen) {
+            return arguments;
+        }
+
+        loop {
+            arguments.push(self.parse_expression());
+
+            if self.cursor.match_token(&TokenType::Comma) {
+                continue;
+            }
+
+            break;
+        }
+
+        if self.expect(TokenType::RightParen).is_err() {
+            self.synchronize();
+        }
+
+        arguments
     }
 
     /// Parsea la lista de parámetros de una función.

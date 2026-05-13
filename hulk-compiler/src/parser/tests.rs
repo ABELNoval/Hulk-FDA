@@ -21,7 +21,7 @@ mod tests_parser {
     use crate::parser::ast::{
         BinaryOperator, Declaration, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal,
         Program, ProtocolDeclaration, ProtocolMethodSignature, TypeDeclaration, TypeReference,
-        TypeReferenceKind,
+        TypeMember, TypeReferenceKind,
     };
     use crate::utils::errors::span::Span;
 
@@ -923,6 +923,49 @@ mod tests_parser {
                 assert!(matches!(function.body.kind, ExprKind::Block(_)));
             }
             _ => panic!("Se esperaba DeclarationKind::Function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_type_declaration_with_inherits_and_members() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "type Point(x: Number, y: Number) inherits BasePoint(x, y) { size: Number = 0; function norm() => x }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(declaration.is_some(), "Debe parsear una declaración de tipo");
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Type(type_decl) => {
+                assert_eq!(type_decl.name, "Point");
+                assert_eq!(type_decl.parameters.len(), 2);
+                assert!(type_decl.inherits.is_some());
+                assert_eq!(type_decl.parent_arguments.len(), 2);
+                assert_eq!(type_decl.members.len(), 2);
+
+                match &type_decl.members[0] {
+                    TypeMember::Attribute(attribute) => {
+                        assert_eq!(attribute.name, "size");
+                        assert!(attribute.annotation.is_some());
+                    }
+                    _ => panic!("Se esperaba un atributo como primer miembro"),
+                }
+
+                match &type_decl.members[1] {
+                    TypeMember::Method(function) => {
+                        assert_eq!(function.name, "norm");
+                        assert_eq!(function.parameters.len(), 0);
+                    }
+                    _ => panic!("Se esperaba un método como segundo miembro"),
+                }
+            }
+            _ => panic!("Se esperaba DeclarationKind::Type"),
         }
     }
 }

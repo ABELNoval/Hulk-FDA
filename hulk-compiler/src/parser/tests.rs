@@ -20,8 +20,8 @@ mod tests_parser {
     use crate::parser::TokenCursor;
     use crate::parser::ast::{
         BinaryOperator, Declaration, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal,
-        Program, ProtocolDeclaration, ProtocolMethodSignature, TypeDeclaration, TypeReference,
-        TypeMember, TypeReferenceKind,
+        Program, ProtocolDeclaration, ProtocolMethodSignature, TypeDeclaration, TypeMember,
+        TypeReference, TypeReferenceKind,
     };
     use crate::utils::errors::span::Span;
 
@@ -938,7 +938,10 @@ mod tests_parser {
         let mut parser = Parser::new(tokens);
         let declaration = parser.parse_declaration();
 
-        assert!(declaration.is_some(), "Debe parsear una declaración de tipo");
+        assert!(
+            declaration.is_some(),
+            "Debe parsear una declaración de tipo"
+        );
 
         let declaration = declaration.unwrap();
         match declaration.kind {
@@ -966,6 +969,316 @@ mod tests_parser {
                 }
             }
             _ => panic!("Se esperaba DeclarationKind::Type"),
+        }
+    }
+
+    // =========================================================================
+    // Tests para type attributes (Tarea #3)
+    // =========================================================================
+
+    #[test]
+    fn test_parse_type_with_multiple_attributes() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "type Person() {
+            name: String = \"John\";
+            age: Number = 30;
+            salary: Number = 5000
+        }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(declaration.is_some());
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Type(type_decl) => {
+                assert_eq!(type_decl.name, "Person");
+                assert_eq!(type_decl.members.len(), 3);
+
+                // Verificar que todos son atributos
+                for (i, member) in type_decl.members.iter().enumerate() {
+                    match member {
+                        TypeMember::Attribute(attr) => {
+                            assert!(attr.annotation.is_some());
+                            assert!(!attr.name.is_empty());
+                        }
+                        _ => panic!("Se esperaba atributo en posición {}", i),
+                    }
+                }
+            }
+            _ => panic!("Se esperaba Type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_type_attribute_with_complex_initializer() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "type Circle() {
+            radius: Number = 5;
+            area: Number = 10
+        }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(declaration.is_some());
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Type(type_decl) => {
+                assert_eq!(type_decl.name, "Circle");
+                assert_eq!(type_decl.members.len(), 2);
+
+                // El segundo atributo tiene un inicializador numérico
+                match &type_decl.members[1] {
+                    TypeMember::Attribute(attr) => {
+                        assert_eq!(attr.name, "area");
+                        // El inicializador debe ser una expresión (número literal)
+                        match &attr.initializer.kind {
+                            ExprKind::Literal(Literal::Number(val)) => {
+                                assert_eq!(*val, 10.0);
+                            }
+                            _ => panic!("Se esperaba un literal numérico para el inicializador"),
+                        }
+                    }
+                    _ => panic!("Se esperaba atributo"),
+                }
+            }
+            _ => panic!("Se esperaba Type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_type_attributes_mixed_with_methods() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "type Rectangle() {
+            width: Number = 10;
+            height: Number = 20;
+            function getArea() => width * height;
+            color: String = \"red\"
+        }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(declaration.is_some());
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Type(type_decl) => {
+                assert_eq!(type_decl.name, "Rectangle");
+                assert_eq!(type_decl.members.len(), 4);
+
+                // Primer atributo
+                match &type_decl.members[0] {
+                    TypeMember::Attribute(attr) => assert_eq!(attr.name, "width"),
+                    _ => panic!("Se esperaba atributo en posición 0"),
+                }
+
+                // Segundo atributo
+                match &type_decl.members[1] {
+                    TypeMember::Attribute(attr) => assert_eq!(attr.name, "height"),
+                    _ => panic!("Se esperaba atributo en posición 1"),
+                }
+
+                // Método
+                match &type_decl.members[2] {
+                    TypeMember::Method(func) => assert_eq!(func.name, "getArea"),
+                    _ => panic!("Se esperaba método en posición 2"),
+                }
+
+                // Tercer atributo (después del método)
+                match &type_decl.members[3] {
+                    TypeMember::Attribute(attr) => assert_eq!(attr.name, "color"),
+                    _ => panic!("Se esperaba atributo en posición 3"),
+                }
+            }
+            _ => panic!("Se esperaba Type"),
+        }
+    }
+
+    // =========================================================================
+    // Tests para type methods (Tarea #4)
+    // =========================================================================
+
+    #[test]
+    fn test_parse_type_method_with_parameters() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "type Calculator() { function add(x, y) => x; function multiply(a, b) => a }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(
+            declaration.is_some(),
+            "Debe parsear una declaración de tipo"
+        );
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Type(type_decl) => {
+                assert_eq!(type_decl.name, "Calculator");
+                assert_eq!(type_decl.members.len(), 2);
+
+                // Validar primer método
+                match &type_decl.members[0] {
+                    TypeMember::Method(method) => {
+                        assert_eq!(method.name, "add");
+                        assert_eq!(method.parameters.len(), 2);
+                        assert_eq!(method.parameters[0].name, "x");
+                        assert_eq!(method.parameters[1].name, "y");
+                    }
+                    _ => panic!("Se esperaba método en posición 0"),
+                }
+
+                // Validar segundo método
+                match &type_decl.members[1] {
+                    TypeMember::Method(method) => {
+                        assert_eq!(method.name, "multiply");
+                        assert_eq!(method.parameters.len(), 2);
+                    }
+                    _ => panic!("Se esperaba método en posición 1"),
+                }
+            }
+            _ => panic!("Se esperaba DeclarationKind::Type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_type_method_with_return_type() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "type Helper() { function getValue() : Number => 42 }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(declaration.is_some());
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Type(type_decl) => {
+                assert_eq!(type_decl.name, "Helper");
+                assert_eq!(type_decl.members.len(), 1);
+
+                match &type_decl.members[0] {
+                    TypeMember::Method(method) => {
+                        assert_eq!(method.name, "getValue");
+                        assert!(method.return_type.is_some(), "Debe tener tipo de retorno");
+                        let return_type = method.return_type.as_ref().unwrap();
+                        assert_eq!(return_type.display_name(), "Number");
+                    }
+                    _ => panic!("Se esperaba método"),
+                }
+            }
+            _ => panic!("Se esperaba Type"),
+        }
+    }
+
+    // =========================================================================
+    // Tests para inheritance declarations (Tarea #5)
+    // =========================================================================
+
+    #[test]
+    fn test_parse_type_with_single_inheritance() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "type Dog() inherits Animal() { }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(declaration.is_some());
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Type(type_decl) => {
+                assert_eq!(type_decl.name, "Dog");
+                assert!(type_decl.inherits.is_some(), "Debe tener un tipo base");
+                let parent = type_decl.inherits.as_ref().unwrap();
+                assert_eq!(parent.display_name(), "Animal");
+                assert_eq!(type_decl.parent_arguments.len(), 0);
+            }
+            _ => panic!("Se esperaba Type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_type_with_inheritance_and_parent_arguments() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "type Circle(r: Number) inherits Shape(r, r) { }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(declaration.is_some());
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Type(type_decl) => {
+                assert_eq!(type_decl.name, "Circle");
+                assert!(type_decl.inherits.is_some());
+                let parent = type_decl.inherits.as_ref().unwrap();
+                assert_eq!(parent.display_name(), "Shape");
+                assert_eq!(
+                    type_decl.parent_arguments.len(),
+                    2,
+                    "Debe pasar 2 argumentos al padre"
+                );
+            }
+            _ => panic!("Se esperaba Type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_type_without_inheritance() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "type Standalone() { }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(declaration.is_some());
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Type(type_decl) => {
+                assert_eq!(type_decl.name, "Standalone");
+                assert!(type_decl.inherits.is_none(), "No debe tener tipo base");
+                assert_eq!(type_decl.parent_arguments.len(), 0);
+            }
+            _ => panic!("Se esperaba Type"),
         }
     }
 }

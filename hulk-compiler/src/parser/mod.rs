@@ -30,6 +30,7 @@ use self::ast::{
     AttributeDeclaration, DeclarationKind, FunctionDeclaration, Parameter, TypeDeclaration,
     TypeMember,
 };
+use self::ast::{ProtocolDeclaration, ProtocolMethodSignature};
 use crate::lexer::Token;
 use crate::lexer::TokenType;
 use crate::utils::errors::DisplayError;
@@ -63,6 +64,8 @@ impl Parser {
             self.parse_function_declaration()
         } else if self.cursor.check(&TokenType::Type) {
             self.parse_type_declaration()
+        } else if self.cursor.check(&TokenType::Protocol) {
+            self.parse_protocol_declaration()
         } else {
             None
         }
@@ -365,6 +368,120 @@ impl Parser {
         }
 
         arguments
+    }
+
+    /// Parse una declaración de protocolo.
+    ///
+    /// Gramática (MVP):
+    /// protocol_decl = "protocol" identifier ["extends" type_ref ("," type_ref)*]
+    ///                 "{" protocol_member* "}"
+    fn parse_protocol_declaration(&mut self) -> Option<Declaration> {
+        let protocol_token = match self.expect(TokenType::Protocol) {
+            Ok(t) => t,
+            Err(_) => return None,
+        };
+
+        let start_span = protocol_token.span;
+
+        let name_token = self.cursor.peek().clone();
+        let name = match &name_token.token_type {
+            TokenType::Identifier(n) => {
+                self.cursor.advance();
+                n.clone()
+            }
+            _ => {
+                self.error(ParserError::ExpectedTypeName);
+                self.synchronize();
+                return None;
+            }
+        };
+
+        let mut extends = Vec::new();
+        if self.cursor.match_token(&TokenType::Extends) {
+            // one or more type refs separated by commas
+            loop {
+                extends.push(self.parse_type_reference());
+                if !self.cursor.match_token(&TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+
+        // members
+        let mut members = Vec::new();
+
+        if self.expect(TokenType::LeftBrace).is_err() {
+            self.synchronize();
+            return None;
+        }
+
+        while !self.cursor.check(&TokenType::RightBrace) && !self.cursor.is_at_end() {
+            // parse method signature
+            if let Some(sig) = self.parse_protocol_method_signature() {
+                members.push(sig);
+            } else {
+                // skip token to avoid infinite loop
+                self.cursor.advance();
+            }
+
+            // optional semicolon between members
+            self.cursor.match_token(&TokenType::Semicolon);
+        }
+
+        if self.expect(TokenType::RightBrace).is_err() {
+            self.synchronize();
+        }
+
+        let end_span = self.cursor.peek().span.clone();
+        let span = start_span.merge(&end_span);
+
+        Some(Declaration::new(
+            DeclarationKind::Protocol(ProtocolDeclaration {
+                name,
+                extends,
+                members,
+            }),
+            span,
+        ))
+    }
+
+    /// Parsea una firma de método dentro de un protocolo: name(params): Type
+    fn parse_protocol_method_signature(&mut self) -> Option<ProtocolMethodSignature> {
+        let name_token = self.cursor.peek().clone();
+        let name = match &name_token.token_type {
+            TokenType::Identifier(n) => {
+                self.cursor.advance();
+                n.clone()
+            }
+            _ => return None,
+        };
+
+        if self.expect(TokenType::LeftParen).is_err() {
+            self.synchronize();
+            return None;
+        }
+
+        let parameters = self.parse_parameter_list();
+
+        // Expect colon and return type
+        let return_type = if self.cursor.match_token(&TokenType::Colon) {
+            self.parse_type_reference()
+        } else {
+            // default to error type if missing
+            self.error(ParserError::ExpectedType {
+                found: "<missing>".to_string(),
+            });
+            TypeReference::new("Void".to_string(), self.cursor.peek().span.clone())
+        };
+
+        let span = name_token.span.merge(&return_type.span);
+
+        Some(ProtocolMethodSignature {
+            name,
+            parameters,
+            return_type,
+            span,
+        })
     }
 
     /// Parsea la lista de parámetros de una función.

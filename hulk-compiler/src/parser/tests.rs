@@ -512,6 +512,35 @@ mod tests_parser {
     }
 
     #[test]
+    fn test_parse_protocol_declaration() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "protocol Iterable extends Seq { next(): Boolean; reset(): Void }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(
+            declaration.is_some(),
+            "Debe parsear una declaración de protocolo"
+        );
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Protocol(protocol) => {
+                assert_eq!(protocol.name, "Iterable");
+                assert_eq!(protocol.extends.len(), 1);
+                assert_eq!(protocol.members.len(), 2);
+                assert_eq!(protocol.members[0].name, "next");
+            }
+            _ => panic!("Se esperaba DeclarationKind::Protocol"),
+        }
+    }
+
+    #[test]
     fn test_self_expr_node() {
         let span = Span::new("test".to_string(), 1, 1, 1, 5);
         let self_node = Expr::self_expr(span.clone());

@@ -62,7 +62,23 @@ impl Parser {
     }
 
     pub fn parse_expression(&mut self) -> Expr {
-        unimplemented!()
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Expr {
+        let token = self.cursor.advance();
+        let span = token.span.clone();
+
+        match token.token_type {
+            TokenType::Number(value) => Expr::literal(Literal::Number(value), span),
+            TokenType::String(value) => Expr::literal(Literal::String(value), span),
+            TokenType::True => Expr::literal(Literal::Boolean(true), span),
+            TokenType::False => Expr::literal(Literal::Boolean(false), span),
+            TokenType::Pi => Expr::literal(Literal::Pi, span),
+            TokenType::E => Expr::literal(Literal::E, span),
+            TokenType::Identifier(name) => Expr::identifier(name, span),
+            _ => unimplemented!("Unexpected token in expression: {:?}", token),
+        }
     }
 
     pub fn parse_type_reference(&mut self) -> TypeReference {

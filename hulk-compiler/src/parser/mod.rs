@@ -191,7 +191,42 @@ impl Parser {
             return Expr::unary(op, operand, span);
         }
 
-        self.parse_primary()
+        self.parse_call()
+    }
+
+    fn parse_call(&mut self) -> Expr {
+        let mut expr = self.parse_primary();
+
+        loop {
+            if self.cursor.check(&TokenType::LeftParen) {
+                self.cursor.advance();
+                let mut arguments = Vec::new();
+
+                if !self.cursor.check(&TokenType::RightParen) {
+                    loop {
+                        arguments.push(self.parse_expression());
+                        if self.cursor.check(&TokenType::Comma) {
+                            self.cursor.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                let close_span = if self.cursor.check(&TokenType::RightParen) {
+                    self.cursor.advance().span
+                } else {
+                    panic!("Expected ')' after arguments");
+                };
+
+                let span = expr.span.merge(&close_span);
+                expr = Expr::call(expr, arguments, span);
+            } else {
+                break;
+            }
+        }
+
+        expr
     }
 
     fn parse_primary(&mut self) -> Expr {

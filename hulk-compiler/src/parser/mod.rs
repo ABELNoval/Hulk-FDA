@@ -62,7 +62,68 @@ impl Parser {
     }
 
     pub fn parse_expression(&mut self) -> Expr {
-        self.parse_term()
+        self.parse_logical_or()
+    }
+
+    fn parse_logical_or(&mut self) -> Expr {
+        let mut expr = self.parse_logical_and();
+
+        while self.cursor.check(&TokenType::Pipe) {
+            let operator = self.cursor.advance();
+            let right = self.parse_logical_and();
+            let span = expr.span.merge(&right.span);
+            let op = BinaryOperator::from_token_type(&operator.token_type).unwrap();
+            expr = Expr::binary(expr, op, right, span);
+        }
+
+        expr
+    }
+
+    fn parse_logical_and(&mut self) -> Expr {
+        let mut expr = self.parse_equality();
+
+        while self.cursor.check(&TokenType::Ampersand) {
+            let operator = self.cursor.advance();
+            let right = self.parse_equality();
+            let span = expr.span.merge(&right.span);
+            let op = BinaryOperator::from_token_type(&operator.token_type).unwrap();
+            expr = Expr::binary(expr, op, right, span);
+        }
+
+        expr
+    }
+
+    fn parse_equality(&mut self) -> Expr {
+        let mut expr = self.parse_comparison();
+
+        while self.cursor.check_any(&[TokenType::EqualEqual, TokenType::BangEqual]) {
+            let operator = self.cursor.advance();
+            let right = self.parse_comparison();
+            let span = expr.span.merge(&right.span);
+            let op = BinaryOperator::from_token_type(&operator.token_type).unwrap();
+            expr = Expr::binary(expr, op, right, span);
+        }
+
+        expr
+    }
+
+    fn parse_comparison(&mut self) -> Expr {
+        let mut expr = self.parse_term();
+
+        while self.cursor.check_any(&[
+            TokenType::Less,
+            TokenType::LessEqual,
+            TokenType::Greater,
+            TokenType::GreaterEqual,
+        ]) {
+            let operator = self.cursor.advance();
+            let right = self.parse_term();
+            let span = expr.span.merge(&right.span);
+            let op = BinaryOperator::from_token_type(&operator.token_type).unwrap();
+            expr = Expr::binary(expr, op, right, span);
+        }
+
+        expr
     }
 
     fn parse_term(&mut self) -> Expr {
@@ -108,7 +169,7 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Expr {
-        if self.cursor.check_any(&[TokenType::Plus, TokenType::Minus]) {
+        if self.cursor.check_any(&[TokenType::Plus, TokenType::Minus, TokenType::Bang]) {
             let operator = self.cursor.advance();
             let operand = self.parse_unary();
             let span = operator.span.merge(&operand.span);

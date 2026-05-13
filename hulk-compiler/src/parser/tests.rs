@@ -563,10 +563,10 @@ mod tests_parser {
         let code = "{ 5 }";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::Block(exprs) => {
                 assert_eq!(exprs.len(), 1, "Bloque debe tener 1 expresión");
@@ -583,10 +583,10 @@ mod tests_parser {
         let code = "{}";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::Block(exprs) => {
                 assert_eq!(exprs.len(), 0, "Bloque vacío debe tener 0 expresiones");
@@ -603,10 +603,10 @@ mod tests_parser {
         let code = "{ 5; 10; 15 }";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::Block(exprs) => {
                 assert_eq!(exprs.len(), 3, "Bloque debe tener 3 expresiones");
@@ -627,12 +627,16 @@ mod tests_parser {
         let code = "let x = 5";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
-            ExprKind::Let { name, value, annotation } => {
+            ExprKind::Let {
+                name,
+                value,
+                annotation,
+            } => {
                 assert_eq!(name, "x", "Variable debe ser 'x'");
                 assert!(annotation.is_none(), "No debe haber anotación de tipo");
                 assert!(value.is_some(), "Debe haber un valor");
@@ -652,12 +656,16 @@ mod tests_parser {
         let code = "let x = 5";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
-            ExprKind::Let { name, value, annotation: _ } => {
+            ExprKind::Let {
+                name,
+                value,
+                annotation: _,
+            } => {
                 assert_eq!(name, "x");
                 assert!(value.is_some());
             }
@@ -677,10 +685,10 @@ mod tests_parser {
         let code = "if (true) { 5 }";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::If {
                 condition: _,
@@ -704,10 +712,10 @@ mod tests_parser {
         let code = "if (true) { 1 } else { 2 }";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::If {
                 condition: _,
@@ -731,10 +739,10 @@ mod tests_parser {
         let code = "if (false) { 1 } elif (true) { 2 } else { 3 }";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::If {
                 condition: _,
@@ -762,10 +770,10 @@ mod tests_parser {
         let code = "while (true) { 5 }";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::While {
                 condition: _,
@@ -790,10 +798,10 @@ mod tests_parser {
         let code = "for i in range(1, 10) { 5 }";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::For {
                 variable,
@@ -819,10 +827,10 @@ mod tests_parser {
         let code = "x := 5";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::Assignment { target, value } => {
                 // target y value son Box<Expr>, siempre existen
@@ -841,10 +849,10 @@ mod tests_parser {
         let code = "x := y + 5";
         let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
         let tokens = lexer.tokenize();
-        
+
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_expression();
-        
+
         match &expr.kind {
             ExprKind::Assignment { target, value: _ } => {
                 // Target debe ser un identificador
@@ -855,6 +863,66 @@ mod tests_parser {
                 }
             }
             _ => panic!("Se esperaba Assignment"),
+        }
+    }
+
+    // =========================================================================
+    // Tests para parse_declaration() - Declaraciones de función
+    // =========================================================================
+
+    #[test]
+    fn test_parse_function_declaration_expression_body() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "function sum(x, y) => x";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(
+            declaration.is_some(),
+            "Debe parsear una declaración de función"
+        );
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Function(function) => {
+                assert_eq!(function.name, "sum");
+                assert_eq!(function.parameters.len(), 2);
+                assert!(function.return_type.is_none());
+            }
+            _ => panic!("Se esperaba DeclarationKind::Function"),
+        }
+    }
+
+    #[test]
+    fn test_parse_function_declaration_block_body() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "function answer() { 42 }";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(
+            declaration.is_some(),
+            "Debe parsear una declaración de función"
+        );
+
+        let declaration = declaration.unwrap();
+        match declaration.kind {
+            DeclarationKind::Function(function) => {
+                assert_eq!(function.name, "answer");
+                assert_eq!(function.parameters.len(), 0);
+                assert!(matches!(function.body.kind, ExprKind::Block(_)));
+            }
+            _ => panic!("Se esperaba DeclarationKind::Function"),
         }
     }
 }

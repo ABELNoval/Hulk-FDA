@@ -28,6 +28,8 @@
 
 use crate::lexer::Token;
 use crate::lexer::TokenType;
+use crate::utils::errors::DisplayError;
+use crate::utils::errors::ParserError;
 
 pub mod ast;
 pub use ast::{
@@ -62,6 +64,268 @@ impl Parser {
     }
 
     pub fn parse_expression(&mut self) -> Expr {
+        if self.cursor.check(&TokenType::Let) {
+            self.parse_let_binding()
+        } else if self.cursor.check(&TokenType::If) {
+            self.parse_if_expr()
+        } else if self.cursor.check(&TokenType::While) {
+            self.parse_while_expr()
+        } else if self.cursor.check(&TokenType::For) {
+            self.parse_for_expr()
+        } else if self.cursor.check(&TokenType::LeftBrace) {
+            self.parse_block()
+        } else {
+            self.parse_assignment_expr()
+        }
+    }
+
+    fn parse_block(&mut self) -> Expr {
+        let start_token = self.expect(TokenType::LeftBrace);
+
+        if let Err(_) = start_token {
+            return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
+        }
+
+        let start_span = start_token.unwrap().span;
+        let mut expressions = Vec::new();
+
+        while !self.cursor.check(&TokenType::RightBrace) && !self.cursor.is_at_end() {
+            let expr = self.parse_expression();
+            expressions.push(expr);
+            self.cursor.match_token(&TokenType::Semicolon);
+        }
+
+        if let Err(_) = self.expect(TokenType::RightBrace) {
+            self.synchronize();
+        }
+
+        let end_span = self.cursor.peek().span.clone();
+        let span = start_span.merge(&end_span);
+        Expr::block(expressions, span)
+    }
+
+    fn parse_let_binding(&mut self) -> Expr {
+        let start_token = self.expect(TokenType::Let);
+
+        if let Err(_) = start_token {
+            return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
+        }
+
+        let start_span = start_token.unwrap().span;
+        let mut let_exprs = Vec::new();
+
+        if let Some(expr) = self.parse_single_let_binding() {
+            let_exprs.push(expr);
+        }
+
+        while self.cursor.match_token(&TokenType::Semicolon) {
+            if let Some(expr) = self.parse_single_let_binding() {
+                let_exprs.push(expr);
+            } else {
+                break;
+            }
+        }
+
+        let end_span = self.cursor.peek().span.clone();
+
+        if let Some(expr) = let_exprs.first().cloned() {
+            if let_exprs.len() == 1 {
+                let span = start_span.merge(&expr.span);
+                return Expr::new(expr.kind, span);
+            }
+        }
+
+        if !let_exprs.is_empty() {
+            let span = start_span.merge(&end_span);
+            return Expr::block(let_exprs, span);
+        }
+
+        Expr::literal(Literal::Number(0.0), start_span.merge(&end_span))
+    }
+
+    fn parse_single_let_binding(&mut self) -> Option<Expr> {
+        let name_token = self.cursor.peek().clone();
+
+        if !matches!(name_token.token_type, TokenType::Identifier(_)) {
+            self.error(ParserError::ExpectedVariableName);
+            return None;
+        }
+
+        let name = match &name_token.token_type {
+            TokenType::Identifier(n) => n.clone(),
+            _ => return None,
+        };
+
+        self.cursor.advance();
+        let start_span = name_token.span.clone();
+
+        let annotation = if self.cursor.match_token(&TokenType::Colon) {
+            Some(self.parse_type_reference())
+        } else {
+            None
+        };
+
+        if let Err(_) = self.expect(TokenType::Equal) {
+            self.synchronize();
+            return None;
+        }
+
+        let value = self.parse_expression();
+        let end_span = value.span.clone();
+        let span = start_span.merge(&end_span);
+
+        Some(Expr::let_expr(name, annotation, Some(value), span))
+    }
+
+    fn parse_if_expr(&mut self) -> Expr {
+        let start_token = self.expect(TokenType::If);
+
+        if let Err(_) = start_token {
+            return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
+        }
+
+        let start_span = start_token.unwrap().span;
+
+        if let Err(_) = self.expect(TokenType::LeftParen) {
+            self.synchronize();
+            return Expr::literal(Literal::Number(0.0), start_span);
+        }
+
+        let condition = self.parse_expression();
+
+        if let Err(_) = self.expect(TokenType::RightParen) {
+            self.synchronize();
+        }
+
+        let then_expr = self.parse_expression();
+        let (elif_parts, else_expr) = self.parse_elif_parts();
+
+        let end_span = else_expr
+            .as_ref()
+            .map(|e| e.span.clone())
+            .or_else(|| elif_parts.last().map(|(_, e)| e.span.clone()))
+            .unwrap_or_else(|| then_expr.span.clone());
+
+        let span = start_span.merge(&end_span);
+        Expr::if_expr(condition, then_expr, elif_parts, else_expr, span)
+    }
+
+    fn parse_elif_parts(&mut self) -> (Vec<(Expr, Expr)>, Option<Expr>) {
+        let mut elif_parts = Vec::new();
+
+        while self.cursor.match_token(&TokenType::Elif) {
+            if let Err(_) = self.expect(TokenType::LeftParen) {
+                self.synchronize();
+                break;
+            }
+
+            let condition = self.parse_expression();
+
+            if let Err(_) = self.expect(TokenType::RightParen) {
+                self.synchronize();
+            }
+
+            let elif_expr = self.parse_expression();
+            elif_parts.push((condition, elif_expr));
+        }
+
+        let else_expr = if self.cursor.match_token(&TokenType::Else) {
+            Some(self.parse_expression())
+        } else {
+            None
+        };
+
+        (elif_parts, else_expr)
+    }
+
+    fn parse_while_expr(&mut self) -> Expr {
+        let start_token = self.expect(TokenType::While);
+
+        if let Err(_) = start_token {
+            return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
+        }
+
+        let start_span = start_token.unwrap().span;
+
+        if let Err(_) = self.expect(TokenType::LeftParen) {
+            self.synchronize();
+            return Expr::literal(Literal::Number(0.0), start_span);
+        }
+
+        let condition = self.parse_expression();
+
+        if let Err(_) = self.expect(TokenType::RightParen) {
+            self.synchronize();
+        }
+
+        let body = self.parse_expression();
+        let end_span = body.span.clone();
+        let span = start_span.merge(&end_span);
+        Expr::while_expr(condition, body, span)
+    }
+
+    fn parse_for_expr(&mut self) -> Expr {
+        let start_token = self.expect(TokenType::For);
+
+        if let Err(_) = start_token {
+            return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
+        }
+
+        let start_span = start_token.unwrap().span;
+        let var_token = self.cursor.peek().clone();
+
+        if !matches!(var_token.token_type, TokenType::Identifier(_)) {
+            self.error(ParserError::ExpectedIdentifier {
+                found: var_token.lexeme.clone(),
+            });
+            self.synchronize();
+            return Expr::literal(Literal::Number(0.0), start_span);
+        }
+
+        let variable = match &var_token.token_type {
+            TokenType::Identifier(v) => v.clone(),
+            _ => return Expr::literal(Literal::Number(0.0), start_span),
+        };
+
+        self.cursor.advance();
+
+        if let Err(_) = self.expect(TokenType::In) {
+            self.synchronize();
+            return Expr::literal(Literal::Number(0.0), start_span);
+        }
+
+        let iterable = self.parse_expression();
+        let body = self.parse_expression();
+        let end_span = body.span.clone();
+        let span = start_span.merge(&end_span);
+        Expr::for_expr(variable, iterable, body, span)
+    }
+
+    fn parse_assignment_expr(&mut self) -> Expr {
+        let checkpoint = self.cursor.current_position();
+
+        if let TokenType::Identifier(_) = &self.cursor.peek().token_type {
+            let identifier_token = self.cursor.advance().clone();
+
+            if self.cursor.check(&TokenType::ColonEqual) {
+                self.cursor.advance();
+
+                let target = Expr::identifier(
+                    match &identifier_token.token_type {
+                        TokenType::Identifier(n) => n.clone(),
+                        _ => String::new(),
+                    },
+                    identifier_token.span.clone(),
+                );
+
+                let value = self.parse_expression();
+                let span = target.span.merge(&value.span);
+                return Expr::assignment(target, value, span);
+            }
+
+            self.cursor.set_position(checkpoint);
+        }
+
         self.parse_logical_or()
     }
 
@@ -271,6 +535,77 @@ impl Parser {
 
     pub fn cursor_mut(&mut self) -> &mut TokenCursor {
         &mut self.cursor
+    }
+
+    fn error(&mut self, error: ParserError) {
+        eprintln!("Parser error[{}]: {}", error.code(), error.message());
+        if let Some(help) = error.help() {
+            eprintln!("  = ayuda: {}", help);
+        }
+    }
+
+    fn expect(&mut self, token_type: TokenType) -> Result<Token, ParserError> {
+        if self.cursor.check(&token_type) {
+            Ok(self.cursor.advance())
+        } else {
+            let found = self.cursor.peek().lexeme.clone();
+            let expected = match &token_type {
+                TokenType::LeftBrace => "{",
+                TokenType::RightBrace => "}",
+                TokenType::LeftParen => "(",
+                TokenType::RightParen => ")",
+                TokenType::LeftBracket => "[",
+                TokenType::RightBracket => "]",
+                TokenType::Semicolon => ";",
+                TokenType::Comma => ",",
+                TokenType::Colon => ":",
+                TokenType::Equal => "=",
+                TokenType::ColonEqual => ":=",
+                TokenType::Arrow => "=>",
+                TokenType::Let => "let",
+                TokenType::If => "if",
+                TokenType::Elif => "elif",
+                TokenType::Else => "else",
+                TokenType::While => "while",
+                TokenType::For => "for",
+                TokenType::In => "in",
+                _ => &format!("{:?}", token_type),
+            };
+
+            let error = ParserError::UnexpectedToken {
+                expected: expected.to_string(),
+                found,
+            };
+            self.error(error.clone());
+            Err(error)
+        }
+    }
+
+    fn synchronize(&mut self) {
+        self.cursor.advance();
+
+        while !self.cursor.is_at_end() {
+            if self.cursor.peek().token_type == TokenType::Semicolon {
+                self.cursor.advance();
+                return;
+            }
+
+            match self.cursor.peek().token_type {
+                TokenType::Let
+                | TokenType::Function
+                | TokenType::Type
+                | TokenType::Protocol
+                | TokenType::If
+                | TokenType::While
+                | TokenType::For
+                | TokenType::RightBrace => {
+                    return;
+                }
+                _ => {
+                    self.cursor.advance();
+                }
+            }
+        }
     }
 }
 

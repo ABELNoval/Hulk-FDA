@@ -213,14 +213,19 @@ impl Parser {
                     }
                 }
 
-                let close_span = if self.cursor.check(&TokenType::RightParen) {
-                    self.cursor.advance().span
+                if self.cursor.check(&TokenType::RightParen) {
+                    let close_span = self.cursor.advance().span;
+                    let span = expr.span.merge(&close_span);
+                    expr = Expr::call(expr, arguments, span);
                 } else {
-                    panic!("Expected ')' after arguments");
-                };
-
-                let span = expr.span.merge(&close_span);
-                expr = Expr::call(expr, arguments, span);
+                    let span = if let Some(last_argument) = arguments.last() {
+                        expr.span.merge(&last_argument.span)
+                    } else {
+                        expr.span.merge(&expr.span)
+                    };
+                    expr = Expr::call(expr, arguments, span);
+                    break;
+                }
             } else {
                 break;
             }

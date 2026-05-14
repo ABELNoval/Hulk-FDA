@@ -478,6 +478,41 @@ mod tests_parser {
     }
 
     #[test]
+    fn test_parse_type_reference_iterable() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "Number*";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let type_reference = parser.parse_type_reference();
+
+        assert_eq!(type_reference.display_name(), "Number*");
+        assert!(matches!(
+            type_reference.kind,
+            TypeReferenceKind::Iterable(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_type_reference_vector() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "Number[]";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let type_reference = parser.parse_type_reference();
+
+        assert_eq!(type_reference.display_name(), "Number[]");
+        assert!(matches!(type_reference.kind, TypeReferenceKind::Vector(_)));
+    }
+
+    #[test]
     fn test_protocol_method_signature_has_no_body() {
         let span = Span::new("test".to_string(), 1, 1, 1, 20);
         let method = ProtocolMethodSignature {

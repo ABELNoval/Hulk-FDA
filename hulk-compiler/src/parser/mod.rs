@@ -56,7 +56,51 @@ impl Parser {
     }
 
     pub fn parse_program(&mut self) -> Program {
-        unimplemented!()
+        let mut declarations = Vec::new();
+        let mut entry_expression = None;
+        let mut program_span = self.cursor.peek().span.clone();
+
+        while self.cursor.match_token(&TokenType::Semicolon) {}
+
+        while !self.cursor.is_at_end() {
+            if self.cursor.check(&TokenType::Function)
+                || self.cursor.check(&TokenType::Type)
+                || self.cursor.check(&TokenType::Protocol)
+            {
+                if let Some(declaration) = self.parse_declaration() {
+                    program_span = if declarations.is_empty() && entry_expression.is_none() {
+                        declaration.span.clone()
+                    } else {
+                        program_span.merge(&declaration.span)
+                    };
+                    declarations.push(declaration);
+                } else {
+                    self.synchronize();
+                }
+
+                while self.cursor.match_token(&TokenType::Semicolon) {}
+                continue;
+            }
+
+            entry_expression = Some(self.parse_expression());
+            if let Some(expr) = &entry_expression {
+                program_span = if declarations.is_empty() && program_span == self.cursor.peek().span
+                {
+                    expr.span.clone()
+                } else {
+                    program_span.merge(&expr.span)
+                };
+            }
+
+            while self.cursor.match_token(&TokenType::Semicolon) {}
+            break;
+        }
+
+        if declarations.is_empty() && entry_expression.is_none() {
+            program_span = self.cursor.peek().span.clone();
+        }
+
+        Program::new(declarations, entry_expression, program_span)
     }
 
     pub fn parse_declaration(&mut self) -> Option<Declaration> {

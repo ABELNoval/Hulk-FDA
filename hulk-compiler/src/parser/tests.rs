@@ -245,6 +245,26 @@ mod tests_parser {
     }
 
     #[test]
+    fn test_parse_program_with_declaration_and_entry_expression() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "function main() => 1; 2";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program();
+
+        assert_eq!(program.declarations.len(), 1);
+        assert!(program.entry_expression.is_some());
+
+        if let Some(entry) = program.entry_expression {
+            assert!(matches!(entry.kind, ExprKind::Literal(Literal::Number(_))));
+        }
+    }
+
+    #[test]
     fn test_expr_binary_node() {
         let span = Span::new("test".to_string(), 1, 1, 1, 5);
         let left = Expr::literal(Literal::Number(2.0), span.clone());

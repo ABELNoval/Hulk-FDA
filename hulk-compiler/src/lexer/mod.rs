@@ -26,9 +26,9 @@
 pub mod token;
 
 // Re-exportar tipos principales para facilitar el uso
+use crate::utils::errors::DisplayError;
 use crate::utils::errors::lexer::LexerError;
 use crate::utils::errors::span::Span;
-use crate::utils::errors::DisplayError;
 pub use token::{Token, TokenType};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -196,8 +196,11 @@ impl Lexer {
             '0'..='9' => self.read_number(start_line, start_col),
 
             // ===================== IDENTIFIER =====================
-            // Letras o _ → identificador o keyword
-            'a'..='z' | 'A'..='Z' | '_' => self.read_identifier(start_line, start_col),
+            // Letras → identificador o keyword
+            'a'..='z' | 'A'..='Z' => self.read_identifier(start_line, start_col),
+
+            // Un identificador no puede empezar con '_'
+            '_' => self.read_identifier(start_line, start_col),
 
             // ===================== ERROR =====================
             // Cualquier cosa que no reconozco
@@ -215,6 +218,7 @@ impl Lexer {
     // Lee identificadores o keywords
     fn read_identifier(&mut self, line: usize, col: usize) -> Token {
         let start = self.position;
+        let starts_with_underscore = self.current_char() == Some('_');
 
         // Consumo letras, números o _
         while let Some(c) = self.current_char() {
@@ -231,6 +235,14 @@ impl Lexer {
         // Verifico si es keyword o identificador
         let token_type =
             TokenType::from_keyword(&lexeme).unwrap_or(TokenType::Identifier(lexeme.clone()));
+
+        if starts_with_underscore {
+            return self.error_token(
+                LexerError::IdentifierStartsWithUnderscore { identifier: lexeme },
+                line,
+                col,
+            );
+        }
 
         self.make_token(&lexeme, token_type, line, col)
     }

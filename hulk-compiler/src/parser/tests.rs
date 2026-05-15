@@ -17,7 +17,7 @@
 mod tests_parser {
     use crate::lexer::Token;
     use crate::lexer::TokenType;
-    use crate::parser::TokenCursor;
+    use crate::parser::{Parser, TokenCursor};
     use crate::parser::ast::{
         BinaryOperator, Declaration, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal,
         Program, ProtocolDeclaration, ProtocolMethodSignature, TypeDeclaration, TypeMember,
@@ -35,6 +35,11 @@ mod tests_parser {
             token_type,
             Span::new("test".to_string(), 1, 1, 1, 1),
         )
+    }
+
+    fn parse_expression_tokens(tokens: Vec<Token>) -> Expr {
+        let mut parser = Parser::new(tokens);
+        parser.parse_expression()
     }
 
     // =========================================================================
@@ -567,6 +572,136 @@ mod tests_parser {
     }
 
     #[test]
+    fn test_parse_expression_arithmetic_precedence() {
+        let expr = parse_expression_tokens(vec![
+            create_token("1", TokenType::Number(1.0)),
+            create_token("+", TokenType::Plus),
+            create_token("2", TokenType::Number(2.0)),
+            create_token("*", TokenType::Star),
+            create_token("3", TokenType::Number(3.0)),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Binary {
+                operator: BinaryOperator::Add,
+                right,
+                ..
+            } => match right.kind {
+                ExprKind::Binary {
+                    operator: BinaryOperator::Multiply,
+                    ..
+                } => {}
+                _ => panic!("se esperaba multiplicación en el lado derecho"),
+            },
+            _ => panic!("se esperaba suma en la raíz"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_logical_precedence() {
+        let expr = parse_expression_tokens(vec![
+            create_token("a", TokenType::Identifier("a".to_string())),
+            create_token("|", TokenType::Pipe),
+            create_token("b", TokenType::Identifier("b".to_string())),
+            create_token("&", TokenType::Ampersand),
+            create_token("c", TokenType::Identifier("c".to_string())),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Binary {
+                operator: BinaryOperator::Or,
+                right,
+                ..
+            } => match right.kind {
+                ExprKind::Binary {
+                    operator: BinaryOperator::And,
+                    ..
+                } => {}
+                _ => panic!("se esperaba AND en el lado derecho de OR"),
+            },
+            _ => panic!("se esperaba OR en la raíz"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_power_right_associative() {
+        let expr = parse_expression_tokens(vec![
+            create_token("2", TokenType::Number(2.0)),
+            create_token("^", TokenType::Caret),
+            create_token("3", TokenType::Number(3.0)),
+            create_token("^", TokenType::Caret),
+            create_token("4", TokenType::Number(4.0)),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Binary {
+                operator: BinaryOperator::Power,
+                right,
+                ..
+            } => match right.kind {
+                ExprKind::Binary {
+                    operator: BinaryOperator::Power,
+                    ..
+                } => {}
+                _ => panic!("se esperaba potencia en el lado derecho"),
+            },
+            _ => panic!("se esperaba potencia en la raíz"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_grouping_precedence() {
+        let expr = parse_expression_tokens(vec![
+            create_token("(", TokenType::LeftParen),
+            create_token("1", TokenType::Number(1.0)),
+            create_token("+", TokenType::Plus),
+            create_token("2", TokenType::Number(2.0)),
+            create_token(")", TokenType::RightParen),
+            create_token("*", TokenType::Star),
+            create_token("3", TokenType::Number(3.0)),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Binary {
+                operator: BinaryOperator::Multiply,
+                left,
+                ..
+            } => match left.kind {
+                ExprKind::Binary {
+                    operator: BinaryOperator::Add,
+                    ..
+                } => {}
+                _ => panic!("se esperaba suma agrupada a la izquierda"),
+            },
+            _ => panic!("se esperaba multiplicación en la raíz"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_call_with_arguments() {
+        let expr = parse_expression_tokens(vec![
+            create_token("f", TokenType::Identifier("f".to_string())),
+            create_token("(", TokenType::LeftParen),
+            create_token("1", TokenType::Number(1.0)),
+            create_token(",", TokenType::Comma),
+            create_token("2", TokenType::Number(2.0)),
+            create_token("+", TokenType::Plus),
+            create_token("3", TokenType::Number(3.0)),
+            create_token(")", TokenType::RightParen),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Call { callee, arguments } => {
+                assert!(matches!(callee.kind, ExprKind::Identifier(_)));
+                assert_eq!(arguments.len(), 2);
+                assert!(matches!(arguments[1].kind, ExprKind::Binary { .. }));
+            }
+            _ => panic!("se esperaba llamada de función"),
     fn test_parse_protocol_declaration() {
         use crate::lexer::Lexer;
         use crate::parser::Parser;

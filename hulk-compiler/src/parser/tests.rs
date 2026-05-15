@@ -24,6 +24,7 @@ mod tests_parser {
     };
     use crate::parser::{Parser, TokenCursor};
     use crate::utils::errors::span::Span;
+    use crate::utils::errors::DisplayError;
 
     // =========================================================================
     // Utilidades para crear tokens de prueba
@@ -40,6 +41,12 @@ mod tests_parser {
     fn parse_expression_tokens(tokens: Vec<Token>) -> Expr {
         let mut parser = Parser::new(tokens);
         parser.parse_expression()
+    }
+
+    fn parse_expression_with_parser(tokens: Vec<Token>) -> (Expr, Parser) {
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+        (expr, parser)
     }
 
     // =========================================================================
@@ -928,6 +935,38 @@ mod tests_parser {
         ]);
 
         assert!(matches!(expr.kind, ExprKind::Continue));
+    }
+
+    #[test]
+    fn test_parser_collects_errors_without_printing() {
+        let (expr, mut parser) = parse_expression_with_parser(vec![
+            create_token("return", TokenType::Return),
+            create_token("1", TokenType::Number(1.0)),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        assert!(matches!(expr.kind, ExprKind::Return(_)));
+
+        let errors = parser.take_errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].error.code(), "E1062");
+        assert_eq!(errors[0].span.start_line, 1);
+        assert_eq!(errors[0].span.start_column, 1);
+        assert!(parser.errors().is_empty());
+    }
+
+    #[test]
+    fn test_parser_error_span_is_preserved() {
+        let (_expr, parser) = parse_expression_with_parser(vec![
+            create_token("break", TokenType::Break),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        let errors = parser.errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].error.code(), "E1060");
+        assert_eq!(errors[0].span.start_line, 1);
+        assert_eq!(errors[0].span.start_column, 1);
     }
 
     #[test]

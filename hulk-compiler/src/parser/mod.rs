@@ -34,8 +34,8 @@ use self::ast::{ProtocolDeclaration, ProtocolMethodSignature};
 use crate::lexer::Token;
 use crate::lexer::TokenType;
 use crate::parser::ast::{BinaryOperator, ExprKind, UnaryOperator};
-use crate::utils::errors::DisplayError;
 use crate::utils::errors::ParserError;
+use crate::utils::errors::span::Span;
 
 pub mod ast;
 pub use ast::{Declaration, Expr, Literal, Program, TypeReference};
@@ -49,6 +49,13 @@ pub struct Parser {
     cursor: TokenCursor,
     loop_depth: usize,
     function_depth: usize,
+    errors: Vec<ParserDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParserDiagnostic {
+    pub error: ParserError,
+    pub span: Span,
 }
 
 impl Parser {
@@ -57,7 +64,28 @@ impl Parser {
             cursor: TokenCursor::new(tokens),
             loop_depth: 0,
             function_depth: 0,
+            errors: Vec::new(),
         }
+    }
+
+    pub fn errors(&self) -> &[ParserDiagnostic] {
+        &self.errors
+    }
+
+    pub fn take_errors(&mut self) -> Vec<ParserDiagnostic> {
+        std::mem::take(&mut self.errors)
+    }
+
+    pub fn parse_program_with_errors(&mut self) -> (Program, Vec<ParserDiagnostic>) {
+        let program = self.parse_program();
+        let errors = self.take_errors();
+        (program, errors)
+    }
+
+    pub fn parse_expression_with_errors(&mut self) -> (Expr, Vec<ParserDiagnostic>) {
+        let expression = self.parse_expression();
+        let errors = self.take_errors();
+        (expression, errors)
     }
 
     pub fn parse_program(&mut self) -> Program {
@@ -400,7 +428,9 @@ impl Parser {
 
             if !matches!(
                 &target.kind,
-                ExprKind::Identifier(_) | ExprKind::MemberAccess { .. } | ExprKind::IndexAccess { .. }
+                ExprKind::Identifier(_)
+                    | ExprKind::MemberAccess { .. }
+                    | ExprKind::IndexAccess { .. }
             ) {
                 self.error(ParserError::InvalidAssignmentTarget {
                     target: self.assignment_target_name(&target),
@@ -1250,10 +1280,12 @@ impl Parser {
     /// En una versión más completa, los errores se acumularían en un vector
     /// para reportarlos todos al final. Por ahora los reportamos inmediatamente.
     fn error(&mut self, error: ParserError) {
-        eprintln!("Parser error[{}]: {}", error.code(), error.message());
-        if let Some(help) = error.help() {
-            eprintln!("  = ayuda: {}", help);
-        }
+        let span = self.cursor.peek().span.clone();
+        self.error_at(error, span);
+    }
+
+    fn error_at(&mut self, error: ParserError, span: Span) {
+        self.errors.push(ParserDiagnostic { error, span });
     }
 
     /// Intenta consumir un token del tipo especificado.

@@ -17,12 +17,12 @@
 mod tests_parser {
     use crate::lexer::Token;
     use crate::lexer::TokenType;
-    use crate::parser::{Parser, TokenCursor};
     use crate::parser::ast::{
         BinaryOperator, Declaration, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal,
         Program, ProtocolDeclaration, ProtocolMethodSignature, TypeDeclaration, TypeMember,
         TypeReference, TypeReferenceKind,
     };
+    use crate::parser::{Parser, TokenCursor};
     use crate::utils::errors::span::Span;
 
     // =========================================================================
@@ -702,6 +702,71 @@ mod tests_parser {
                 assert!(matches!(arguments[1].kind, ExprKind::Binary { .. }));
             }
             _ => panic!("se esperaba llamada de función"),
+        }
+    }
+
+    #[test]
+    fn test_parse_assignment_with_member_target() {
+        let expr = parse_expression_tokens(vec![
+            create_token("obj", TokenType::Identifier("obj".to_string())),
+            create_token(".", TokenType::Dot),
+            create_token("x", TokenType::Identifier("x".to_string())),
+            create_token(":=", TokenType::ColonEqual),
+            create_token("1", TokenType::Number(1.0)),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Assignment { target, value } => {
+                assert!(matches!(
+                    value.kind,
+                    ExprKind::Literal(Literal::Number(1.0))
+                ));
+                assert!(matches!(target.kind, ExprKind::MemberAccess { .. }));
+            }
+            _ => panic!("se esperaba asignación con target member access"),
+        }
+    }
+
+    #[test]
+    fn test_parse_assignment_with_index_target() {
+        let expr = parse_expression_tokens(vec![
+            create_token("arr", TokenType::Identifier("arr".to_string())),
+            create_token("[", TokenType::LeftBracket),
+            create_token("0", TokenType::Number(0.0)),
+            create_token("]", TokenType::RightBracket),
+            create_token(":=", TokenType::ColonEqual),
+            create_token("10", TokenType::Number(10.0)),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Assignment { target, value } => {
+                assert!(matches!(
+                    value.kind,
+                    ExprKind::Literal(Literal::Number(10.0))
+                ));
+                assert!(matches!(target.kind, ExprKind::IndexAccess { .. }));
+            }
+            _ => panic!("se esperaba asignación con target index access"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_assignment_target_keeps_rhs_expression() {
+        let expr = parse_expression_tokens(vec![
+            create_token("1", TokenType::Number(1.0)),
+            create_token("+", TokenType::Plus),
+            create_token("2", TokenType::Number(2.0)),
+            create_token(":=", TokenType::ColonEqual),
+            create_token("3", TokenType::Number(3.0)),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        assert!(matches!(expr.kind, ExprKind::Literal(Literal::Number(3.0))));
+    }
+
+    #[test]
     fn test_parse_protocol_declaration() {
         use crate::lexer::Lexer;
         use crate::parser::Parser;

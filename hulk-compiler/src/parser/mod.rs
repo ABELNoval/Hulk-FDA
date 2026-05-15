@@ -33,12 +33,12 @@ use self::ast::{
 use self::ast::{ProtocolDeclaration, ProtocolMethodSignature};
 use crate::lexer::Token;
 use crate::lexer::TokenType;
+use crate::parser::ast::{BinaryOperator, ExprKind, UnaryOperator};
 use crate::utils::errors::DisplayError;
 use crate::utils::errors::ParserError;
-use crate::utils::errors::span::Span;
 
 pub mod ast;
-pub use ast::{Declaration, Expr, ExprKind, Literal, Program, TypeReference};
+pub use ast::{Declaration, Expr, Literal, Program, TypeReference};
 
 // =============================================================================
 // Parser - API común de alto nivel
@@ -343,31 +343,26 @@ impl Parser {
     }
 
     fn parse_assignment_expr(&mut self) -> Expr {
-        let checkpoint = self.cursor.current_position();
+        let target = self.parse_logical_or();
 
-        if let TokenType::Identifier(_) = &self.cursor.peek().token_type {
-            let identifier_token = self.cursor.advance().clone();
+        if self.cursor.match_token(&TokenType::ColonEqual) {
+            let value = self.parse_expression();
 
-            if self.cursor.check(&TokenType::ColonEqual) {
-                self.cursor.advance();
-
-                let target = Expr::identifier(
-                    match &identifier_token.token_type {
-                        TokenType::Identifier(n) => n.clone(),
-                        _ => String::new(),
-                    },
-                    identifier_token.span.clone(),
-                );
-
-                let value = self.parse_expression();
-                let span = target.span.merge(&value.span);
-                return Expr::assignment(target, value, span);
+            if !matches!(
+                &target.kind,
+                ExprKind::Identifier(_) | ExprKind::MemberAccess { .. } | ExprKind::IndexAccess { .. }
+            ) {
+                self.error(ParserError::InvalidAssignmentTarget {
+                    target: self.assignment_target_name(&target),
+                });
+                return value;
             }
 
-            self.cursor.set_position(checkpoint);
+            let span = target.span.merge(&value.span);
+            return Expr::assignment(target, value, span);
         }
 
-        self.parse_logical_or()
+        target
     }
 
     fn parse_logical_or(&mut self) -> Expr {
@@ -544,6 +539,39 @@ impl Parser {
                     expr = Expr::call(expr, arguments, span);
                     break;
                 }
+            } else if self.cursor.match_token(&TokenType::Dot) {
+                let member_token = self.cursor.peek().clone();
+
+                match &member_token.token_type {
+                    TokenType::Identifier(member_name) => {
+                        self.cursor.advance();
+                        let span = expr.span.merge(&member_token.span);
+                        expr = Expr::member_access(expr, member_name.clone(), span);
+                    }
+                    _ => {
+                        self.error(ParserError::ExpectedIdentifier {
+                            found: member_token.lexeme,
+                        });
+                        break;
+                    }
+                }
+            } else if self.cursor.check(&TokenType::LeftBracket) {
+                let open_token = self.cursor.advance();
+                let index = self.parse_expression();
+
+                if self.cursor.check(&TokenType::RightBracket) {
+                    let close_span = self.cursor.advance().span;
+                    let span = expr.span.merge(&close_span);
+                    expr = Expr::index_access(expr, index, span);
+                } else {
+                    self.error(ParserError::UnclosedBracket {
+                        start_line: open_token.span.start_line,
+                        start_column: open_token.span.start_column,
+                    });
+                    let span = expr.span.merge(&index.span);
+                    expr = Expr::index_access(expr, index, span);
+                    break;
+                }
             } else {
                 break;
             }
@@ -596,6 +624,9 @@ impl Parser {
                 });
                 Expr::literal(Literal::Number(0.0), span)
             }
+        }
+    }
+
     pub fn parse_declaration(&mut self) -> Option<Declaration> {
         if self.cursor.check(&TokenType::Function) {
             self.parse_function_declaration()
@@ -661,36 +692,12 @@ impl Parser {
         &mut self.cursor
     }
 
-    // =========================================================================
-    // Métodos privados - Parsing de Expresiones Estructuradas (Tarea #28)
-    // =========================================================================
-
-    /// Parse una expresión en el nivel más alto.
-    ///
-    /// Intenta parsear en este orden (TOP-DOWN):
-    /// 1. Let expressions (let x = 5)
-    /// 2. If expressions (if ...)
-    /// 3. While loops (while ...)
-    /// 4. For loops (for x in ...)
-    /// 5. Assignment expressions (x := 5)
-    /// 6. Block expressions ({ ... })
-    /// 7. Si nada coincide, parsea una expresión primaria (otra persona)
-    pub fn parse_expression(&mut self) -> Expr {
-        // TOP-DOWN: intentamos cada patrón de mayor a menor jerarquía
-
-        if self.cursor.check(&TokenType::Let) {
-            self.parse_let_binding()
-        } else if self.cursor.check(&TokenType::If) {
-            self.parse_if_expr()
-        } else if self.cursor.check(&TokenType::While) {
-            self.parse_while_expr()
-        } else if self.cursor.check(&TokenType::For) {
-            self.parse_for_expr()
-        } else if self.cursor.check(&TokenType::LeftBrace) {
-            self.parse_block()
-        } else {
-            // Intenta parsear assignment o delega a parse_primary (caja negra)
-            self.parse_assignment_expr()
+    fn assignment_target_name(&self, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Identifier(name) => name.clone(),
+            ExprKind::MemberAccess { member, .. } => format!(".{}", member),
+            ExprKind::IndexAccess { .. } => "index access".to_string(),
+            _ => "expression".to_string(),
         }
     }
 
@@ -1110,420 +1117,6 @@ impl Parser {
         }
 
         parameters
-    }
-
-    /// Parse un bloque de código: { expr1; expr2; ... }
-    ///
-    /// Gramática:
-    /// ```
-    /// block = "{" expression* "}"
-    /// ```
-    ///
-    /// Ejemplos:
-    /// - `{ 5 + 3 }`
-    /// - `{ let x = 5; x + 1 }`
-    /// - `{ }`
-    fn parse_block(&mut self) -> Expr {
-        let start_token = self.expect(TokenType::LeftBrace);
-
-        if let Err(_) = start_token {
-            // Si no hay "{", recuperamos y retornamos error
-            return Expr::new(
-                ExprKind::Literal(Literal::Number(0.0)),
-                self.cursor.peek().span.clone(),
-            );
-        }
-
-        let start_span = start_token.unwrap().span;
-        let mut expressions = Vec::new();
-
-        // Parsea expresiones hasta encontrar "}"
-        while !self.cursor.check(&TokenType::RightBrace) && !self.cursor.is_at_end() {
-            let expr = self.parse_expression();
-            expressions.push(expr);
-
-            // Puede haber punto y coma opcional entre expresiones
-            self.cursor.match_token(&TokenType::Semicolon);
-        }
-
-        // Esperamos el "}"
-        if let Err(_) = self.expect(TokenType::RightBrace) {
-            self.synchronize();
-        }
-
-        let end_span = self.cursor.peek().span.clone();
-        let span = start_span.merge(&end_span);
-
-        Expr::new(ExprKind::Block(expressions), span)
-    }
-
-    /// Parse una expresión let con posible múltiples bindings.
-    ///
-    /// Gramática (simplificada):
-    /// ```
-    /// let_expr = "let" binding (";" binding)* "in" expression
-    /// binding = identifier [":" type_ref] "=" expression
-    /// ```
-    ///
-    /// Ejemplos:
-    /// - `let x = 5 in x + 1`
-    /// - `let x = 5; y = 3 in x + y`
-    /// - `let x: Number = 5 in x`
-    fn parse_let_binding(&mut self) -> Expr {
-        let start_token = self.expect(TokenType::Let);
-
-        if let Err(_) = start_token {
-            return Expr::new(
-                ExprKind::Literal(Literal::Number(0.0)),
-                self.cursor.peek().span.clone(),
-            );
-        }
-
-        let start_span = start_token.unwrap().span;
-        let mut let_exprs = Vec::new();
-
-        // Parsea el primer binding
-        if let Some(expr) = self.parse_single_let_binding() {
-            let_exprs.push(expr);
-        }
-
-        // Parsea bindings adicionales si hay ";"
-        while self.cursor.match_token(&TokenType::Semicolon) {
-            if let Some(expr) = self.parse_single_let_binding() {
-                let_exprs.push(expr);
-            } else {
-                break;
-            }
-        }
-
-        let end_span = self.cursor.peek().span.clone();
-
-        // Si solo hay un binding, lo retornamos directamente
-        if let_exprs.len() == 1 {
-            let expr = let_exprs.into_iter().next().unwrap();
-            let span = start_span.merge(&expr.span);
-            Expr::new(expr.kind, span)
-        } else if let_exprs.len() > 1 {
-            // Si hay múltiples, los envolvemos en un bloque de let
-            let span = start_span.merge(&end_span);
-            Expr::new(ExprKind::Block(let_exprs), span)
-        } else {
-            // Error: no hubo ningún binding válido
-            Expr::new(
-                ExprKind::Literal(Literal::Number(0.0)),
-                start_span.merge(&end_span),
-            )
-        }
-    }
-
-    /// Helper para parsear un único binding de let
-    ///
-    /// Formato: `identifier [":" type_ref] "=" expression`
-    fn parse_single_let_binding(&mut self) -> Option<Expr> {
-        // Esperamos un identificador
-        let name_token = self.cursor.peek().clone();
-
-        if !matches!(name_token.token_type, TokenType::Identifier(_)) {
-            self.error(ParserError::ExpectedVariableName);
-            return None;
-        }
-
-        let name = match &name_token.token_type {
-            TokenType::Identifier(n) => n.clone(),
-            _ => return None,
-        };
-
-        self.cursor.advance();
-        let start_span = name_token.span.clone();
-
-        // Tipo opcional: ": Type"
-        let annotation = if self.cursor.match_token(&TokenType::Colon) {
-            Some(self.parse_type_reference())
-        } else {
-            None
-        };
-
-        // Esperamos "="
-        if let Err(_) = self.expect(TokenType::Equal) {
-            self.synchronize();
-            return None;
-        }
-
-        // Parsea la expresión del lado derecho
-        let value = self.parse_expression();
-        let end_span = value.span.clone();
-        let span = start_span.merge(&end_span);
-
-        Some(Expr::new(
-            ExprKind::Let {
-                name,
-                annotation,
-                value: Some(Box::new(value)),
-            },
-            span,
-        ))
-    }
-
-    /// Parse una expresión if/elif/else.
-    ///
-    /// Gramática:
-    /// ```
-    /// if_expr = "if" "(" condition ")" expr
-    ///           ("elif" "(" condition ")" expr)*
-    ///           ("else" expr)?
-    /// ```
-    ///
-    /// Ejemplo: `if (x > 5) { ... } elif (x == 5) { ... } else { ... }`
-    fn parse_if_expr(&mut self) -> Expr {
-        let start_token = self.expect(TokenType::If);
-
-        if let Err(_) = start_token {
-            return Expr::new(
-                ExprKind::Literal(Literal::Number(0.0)),
-                self.cursor.peek().span.clone(),
-            );
-        }
-
-        let start_span = start_token.unwrap().span;
-
-        // Esperamos "("
-        if let Err(_) = self.expect(TokenType::LeftParen) {
-            self.synchronize();
-            return Expr::new(ExprKind::Literal(Literal::Number(0.0)), start_span);
-        }
-
-        // Parsea la condición
-        let condition = self.parse_expression();
-
-        // Esperamos ")"
-        if let Err(_) = self.expect(TokenType::RightParen) {
-            self.synchronize();
-        }
-
-        // Parsea la expresión entonces
-        let then_expr = self.parse_expression();
-
-        // Parsea elif/else
-        let (elif_parts, else_expr) = self.parse_elif_parts();
-
-        let end_span = else_expr
-            .as_ref()
-            .map(|e| e.span.clone())
-            .or_else(|| elif_parts.last().map(|(_, e)| e.span.clone()))
-            .unwrap_or_else(|| then_expr.span.clone());
-
-        let span = start_span.merge(&end_span);
-
-        Expr::new(
-            ExprKind::If {
-                condition: Box::new(condition),
-                then_expr: Box::new(then_expr),
-                elif_parts,
-                else_expr: else_expr.map(Box::new),
-            },
-            span,
-        )
-    }
-
-    /// Helper para parsear elif y else en un if
-    ///
-    /// Retorna: (vec de (condición, expresión) para elifs, expresión else opcional)
-    fn parse_elif_parts(&mut self) -> (Vec<(Expr, Expr)>, Option<Expr>) {
-        let mut elif_parts = Vec::new();
-
-        // Parsea elif clauses
-        while self.cursor.match_token(&TokenType::Elif) {
-            // Esperamos "("
-            if let Err(_) = self.expect(TokenType::LeftParen) {
-                self.synchronize();
-                break;
-            }
-
-            let condition = self.parse_expression();
-
-            // Esperamos ")"
-            if let Err(_) = self.expect(TokenType::RightParen) {
-                self.synchronize();
-            }
-
-            let elif_expr = self.parse_expression();
-            elif_parts.push((condition, elif_expr));
-        }
-
-        // Parsea else clause
-        let else_expr = if self.cursor.match_token(&TokenType::Else) {
-            Some(self.parse_expression())
-        } else {
-            None
-        };
-
-        (elif_parts, else_expr)
-    }
-
-    /// Parse un while loop.
-    ///
-    /// Gramática:
-    /// ```
-    /// while_expr = "while" "(" condition ")" body_expr
-    /// ```
-    ///
-    /// Ejemplo: `while (x > 0) { x := x - 1 }`
-    fn parse_while_expr(&mut self) -> Expr {
-        let start_token = self.expect(TokenType::While);
-
-        if let Err(_) = start_token {
-            return Expr::new(
-                ExprKind::Literal(Literal::Number(0.0)),
-                self.cursor.peek().span.clone(),
-            );
-        }
-
-        let start_span = start_token.unwrap().span;
-
-        // Esperamos "("
-        if let Err(_) = self.expect(TokenType::LeftParen) {
-            self.synchronize();
-            return Expr::new(ExprKind::Literal(Literal::Number(0.0)), start_span);
-        }
-
-        // Parsea la condición
-        let condition = self.parse_expression();
-
-        // Esperamos ")"
-        if let Err(_) = self.expect(TokenType::RightParen) {
-            self.synchronize();
-        }
-
-        // Parsea el cuerpo
-        let body = self.parse_expression();
-        let end_span = body.span.clone();
-        let span = start_span.merge(&end_span);
-
-        Expr::new(
-            ExprKind::While {
-                condition: Box::new(condition),
-                body: Box::new(body),
-            },
-            span,
-        )
-    }
-
-    /// Parse un for loop.
-    ///
-    /// Gramática:
-    /// ```
-    /// for_expr = "for" identifier "in" iterable_expr body_expr
-    /// ```
-    ///
-    /// Ejemplo: `for i in range(1, 10) { print(i) }`
-    fn parse_for_expr(&mut self) -> Expr {
-        let start_token = self.expect(TokenType::For);
-
-        if let Err(_) = start_token {
-            return Expr::new(
-                ExprKind::Literal(Literal::Number(0.0)),
-                self.cursor.peek().span.clone(),
-            );
-        }
-
-        let start_span = start_token.unwrap().span;
-
-        // Esperamos identificador (variable de iteración)
-        let var_token = self.cursor.peek().clone();
-
-        if !matches!(var_token.token_type, TokenType::Identifier(_)) {
-            self.error(ParserError::ExpectedIdentifier {
-                found: var_token.lexeme.clone(),
-            });
-            self.synchronize();
-            return Expr::new(ExprKind::Literal(Literal::Number(0.0)), start_span);
-        }
-
-        let variable = match &var_token.token_type {
-            TokenType::Identifier(v) => v.clone(),
-            _ => return Expr::new(ExprKind::Literal(Literal::Number(0.0)), start_span),
-        };
-
-        self.cursor.advance();
-
-        // Esperamos "in"
-        if let Err(_) = self.expect(TokenType::In) {
-            self.synchronize();
-            return Expr::new(ExprKind::Literal(Literal::Number(0.0)), start_span);
-        }
-
-        // Parsea la expresión iterable
-        let iterable = self.parse_expression();
-
-        // Parsea el cuerpo
-        let body = self.parse_expression();
-        let end_span = body.span.clone();
-        let span = start_span.merge(&end_span);
-
-        Expr::new(
-            ExprKind::For {
-                variable,
-                iterable: Box::new(iterable),
-                body: Box::new(body),
-            },
-            span,
-        )
-    }
-
-    /// Parse una expresión de asignación o delega a parse_primary.
-    ///
-    /// Intenta detectar: `identifier := value`
-    /// Si no hay `:=`, delega a otra persona (parse_primary)
-    fn parse_assignment_expr(&mut self) -> Expr {
-        // Mira adelante para ver si es una asignación
-        // Patrón: identifier := expr
-
-        let checkpoint = self.cursor.current_position();
-
-        // Intenta obtener un identificador
-        if let TokenType::Identifier(_) = &self.cursor.peek().token_type {
-            let identifier_token = self.cursor.advance().clone();
-
-            // Verificamos si hay ":="
-            if self.cursor.check(&TokenType::ColonEqual) {
-                self.cursor.advance(); // Consumir ":="
-
-                let target = Expr::identifier(
-                    match &identifier_token.token_type {
-                        TokenType::Identifier(n) => n.clone(),
-                        _ => String::new(),
-                    },
-                    identifier_token.span.clone(),
-                );
-
-                let value = self.parse_expression();
-                let span = target.span.merge(&value.span);
-
-                return Expr::new(
-                    ExprKind::Assignment {
-                        target: Box::new(target),
-                        value: Box::new(value),
-                    },
-                    span,
-                );
-            } else {
-                // No es asignación, retrocedemos
-                self.cursor.set_position(checkpoint);
-            }
-        }
-
-        // No es asignación, delega a parse_primary (caja negra)
-        self.parse_primary()
-    }
-
-    /// Parsea una expresión primaria (otro método stub que usamos como caja negra)
-    fn parse_primary(&mut self) -> Expr {
-        // Esto es un método stub que otra persona implementa
-        // Por ahora retornamos un placeholder
-        let token = self.cursor.peek().clone();
-        self.cursor.advance();
-
-        Expr::new(ExprKind::Literal(Literal::Number(0.0)), token.span)
     }
 
     // =========================================================================

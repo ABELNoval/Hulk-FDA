@@ -54,6 +54,15 @@ pub enum TokenType {
     /// Palabra clave 'in' (usado en for-in)
     In,
 
+    /// Palabra clave 'return'
+    Return,
+
+    /// Palabra clave 'break'
+    Break,
+
+    /// Palabra clave 'continue'
+    Continue,
+
     // =========================================================================
     // Palabras clave - Declaraciones (Sección 6-8)
     // =========================================================================
@@ -269,6 +278,9 @@ impl Token {
                 | TokenType::While
                 | TokenType::For
                 | TokenType::In
+                | TokenType::Return
+                | TokenType::Break
+                | TokenType::Continue
                 | TokenType::Let
                 | TokenType::Function
                 | TokenType::Type
@@ -359,6 +371,9 @@ impl TokenType {
             "while" => Some(TokenType::While),
             "for" => Some(TokenType::For),
             "in" => Some(TokenType::In),
+            "return" => Some(TokenType::Return),
+            "break" => Some(TokenType::Break),
+            "continue" => Some(TokenType::Continue),
 
             // Declaraciones
             "let" => Some(TokenType::Let),
@@ -408,6 +423,9 @@ impl TokenType {
             TokenType::While => "while",
             TokenType::For => "for",
             TokenType::In => "in",
+            TokenType::Return => "return",
+            TokenType::Break => "break",
+            TokenType::Continue => "continue",
 
             // Declarations
             TokenType::Let => "let",

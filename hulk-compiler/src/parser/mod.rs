@@ -30,6 +30,7 @@ use crate::lexer::Token;
 use crate::lexer::TokenType;
 use crate::utils::errors::DisplayError;
 use crate::utils::errors::ParserError;
+use crate::utils::errors::span::Span;
 
 pub mod ast;
 pub use ast::{
@@ -360,7 +361,10 @@ impl Parser {
     fn parse_equality(&mut self) -> Expr {
         let mut expr = self.parse_comparison();
 
-        while self.cursor.check_any(&[TokenType::EqualEqual, TokenType::BangEqual]) {
+        while self
+            .cursor
+            .check_any(&[TokenType::EqualEqual, TokenType::BangEqual])
+        {
             let operator = self.cursor.advance();
             let right = self.parse_comparison();
             let span = expr.span.merge(&right.span);
@@ -421,7 +425,10 @@ impl Parser {
     fn parse_factor(&mut self) -> Expr {
         let mut expr = self.parse_power();
 
-        while self.cursor.check_any(&[TokenType::Star, TokenType::Slash, TokenType::Percent]) {
+        while self
+            .cursor
+            .check_any(&[TokenType::Star, TokenType::Slash, TokenType::Percent])
+        {
             let operator = self.cursor.advance();
             let right = self.parse_power();
             let span = expr.span.merge(&right.span);
@@ -447,7 +454,10 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Expr {
-        if self.cursor.check_any(&[TokenType::Plus, TokenType::Minus, TokenType::Bang]) {
+        if self
+            .cursor
+            .check_any(&[TokenType::Plus, TokenType::Minus, TokenType::Bang])
+        {
             let operator = self.cursor.advance();
             let operand = self.parse_unary();
             let span = operator.span.merge(&operand.span);
@@ -463,7 +473,7 @@ impl Parser {
 
         loop {
             if self.cursor.check(&TokenType::LeftParen) {
-                self.cursor.advance();
+                let open_token = self.cursor.advance();
                 let mut arguments = Vec::new();
 
                 if !self.cursor.check(&TokenType::RightParen) {
@@ -482,6 +492,10 @@ impl Parser {
                     let span = expr.span.merge(&close_span);
                     expr = Expr::call(expr, arguments, span);
                 } else {
+                    self.error(ParserError::UnclosedParenthesis {
+                        start_line: open_token.span.start_line,
+                        start_column: open_token.span.start_column,
+                    });
                     let span = if let Some(last_argument) = arguments.last() {
                         expr.span.merge(&last_argument.span)
                     } else {
@@ -500,12 +514,15 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Expr {
         if self.cursor.check(&TokenType::LeftParen) {
-            self.cursor.advance();
+            let open_token = self.cursor.advance();
             let expr = self.parse_expression();
             if self.cursor.check(&TokenType::RightParen) {
                 self.cursor.advance();
             } else {
-                panic!("Expected ')' after expression");
+                self.error(ParserError::UnclosedParenthesis {
+                    start_line: open_token.span.start_line,
+                    start_column: open_token.span.start_column,
+                });
             }
             return expr;
         }
@@ -521,7 +538,24 @@ impl Parser {
             TokenType::Pi => Expr::literal(Literal::Pi, span),
             TokenType::E => Expr::literal(Literal::E, span),
             TokenType::Identifier(name) => Expr::identifier(name, span),
-            _ => unimplemented!("Unexpected token in expression: {:?}", token),
+            TokenType::RightParen => {
+                self.error(ParserError::UnmatchedClosingDelimiter { delimiter: ')' });
+                Expr::literal(Literal::Number(0.0), span)
+            }
+            TokenType::RightBracket => {
+                self.error(ParserError::UnmatchedClosingDelimiter { delimiter: ']' });
+                Expr::literal(Literal::Number(0.0), span)
+            }
+            TokenType::RightBrace => {
+                self.error(ParserError::UnmatchedClosingDelimiter { delimiter: '}' });
+                Expr::literal(Literal::Number(0.0), span)
+            }
+            _ => {
+                self.error(ParserError::ExpectedExpression {
+                    found: token.lexeme.clone(),
+                });
+                Expr::literal(Literal::Number(0.0), span)
+            }
         }
     }
 

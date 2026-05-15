@@ -767,6 +767,120 @@ mod tests_parser {
     }
 
     #[test]
+    fn test_parse_expression_new_with_arguments() {
+        let expr = parse_expression_tokens(vec![
+            create_token("new", TokenType::New),
+            create_token("Point", TokenType::Identifier("Point".to_string())),
+            create_token("(", TokenType::LeftParen),
+            create_token("1", TokenType::Number(1.0)),
+            create_token(",", TokenType::Comma),
+            create_token("2", TokenType::Number(2.0)),
+            create_token(")", TokenType::RightParen),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::New {
+                type_ref,
+                arguments,
+            } => {
+                assert_eq!(type_ref.display_name(), "Point");
+                assert_eq!(arguments.len(), 2);
+            }
+            _ => panic!("se esperaba una expresión new"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_self_keyword() {
+        let expr = parse_expression_tokens(vec![
+            create_token("self", TokenType::SelfKeyword),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        assert!(matches!(expr.kind, ExprKind::Self_));
+    }
+
+    #[test]
+    fn test_parse_expression_base_call() {
+        let expr = parse_expression_tokens(vec![
+            create_token("base", TokenType::Base),
+            create_token("(", TokenType::LeftParen),
+            create_token(")", TokenType::RightParen),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Call { callee, arguments } => {
+                assert!(matches!(callee.kind, ExprKind::Base { .. }));
+                assert!(arguments.is_empty());
+            }
+            _ => panic!("se esperaba llamada base()"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_type_check_is() {
+        let expr = parse_expression_tokens(vec![
+            create_token("x", TokenType::Identifier("x".to_string())),
+            create_token("is", TokenType::Is),
+            create_token("Number", TokenType::Identifier("Number".to_string())),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::TypeCheck {
+                expr: inner,
+                type_ref,
+            } => {
+                assert!(matches!(inner.kind, ExprKind::Identifier(_)));
+                assert_eq!(type_ref.display_name(), "Number");
+            }
+            _ => panic!("se esperaba type check con is"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_type_cast_as() {
+        let expr = parse_expression_tokens(vec![
+            create_token("x", TokenType::Identifier("x".to_string())),
+            create_token("as", TokenType::As),
+            create_token("Point", TokenType::Identifier("Point".to_string())),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::TypeCast {
+                expr: inner,
+                type_ref,
+            } => {
+                assert!(matches!(inner.kind, ExprKind::Identifier(_)));
+                assert_eq!(type_ref.display_name(), "Point");
+            }
+            _ => panic!("se esperaba type cast con as"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_type_check_precedence_over_addition() {
+        let expr = parse_expression_tokens(vec![
+            create_token("x", TokenType::Identifier("x".to_string())),
+            create_token("+", TokenType::Plus),
+            create_token("1", TokenType::Number(1.0)),
+            create_token("is", TokenType::Is),
+            create_token("Number", TokenType::Identifier("Number".to_string())),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::TypeCheck { expr: inner, .. } => {
+                assert!(matches!(inner.kind, ExprKind::Binary { .. }));
+            }
+            _ => panic!("se esperaba type check aplicado a x + 1"),
+        }
+    }
+
+    #[test]
     fn test_parse_protocol_declaration() {
         use crate::lexer::Lexer;
         use crate::parser::Parser;

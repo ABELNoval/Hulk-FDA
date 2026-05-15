@@ -411,7 +411,7 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Expr {
-        let mut expr = self.parse_concatenation();
+        let mut expr = self.parse_type_operations();
 
         while self.cursor.check_any(&[
             TokenType::Less,
@@ -420,10 +420,30 @@ impl Parser {
             TokenType::GreaterEqual,
         ]) {
             let operator = self.cursor.advance();
-            let right = self.parse_concatenation();
+            let right = self.parse_type_operations();
             let span = expr.span.merge(&right.span);
             let op = BinaryOperator::from_token_type(&operator.token_type).unwrap();
             expr = Expr::binary(expr, op, right, span);
+        }
+
+        expr
+    }
+
+    fn parse_type_operations(&mut self) -> Expr {
+        let mut expr = self.parse_concatenation();
+
+        loop {
+            if self.cursor.match_token(&TokenType::Is) {
+                let type_reference = self.parse_type_reference();
+                let span = expr.span.merge(&type_reference.span);
+                expr = Expr::type_check(expr, type_reference, span);
+            } else if self.cursor.match_token(&TokenType::As) {
+                let type_reference = self.parse_type_reference();
+                let span = expr.span.merge(&type_reference.span);
+                expr = Expr::type_cast(expr, type_reference, span);
+            } else {
+                break;
+            }
         }
 
         expr
@@ -606,6 +626,50 @@ impl Parser {
             TokenType::Pi => Expr::literal(Literal::Pi, span),
             TokenType::E => Expr::literal(Literal::E, span),
             TokenType::Identifier(name) => Expr::identifier(name, span),
+            TokenType::SelfKeyword => Expr::self_expr(span),
+            TokenType::Base => Expr::base_expr(None, span),
+            TokenType::New => {
+                let type_reference = self.parse_type_reference();
+                let mut arguments = Vec::new();
+                let mut end_span = type_reference.span.clone();
+
+                if self.cursor.check(&TokenType::LeftParen) {
+                    let open_token = self.cursor.advance();
+
+                    if !self.cursor.check(&TokenType::RightParen) {
+                        loop {
+                            arguments.push(self.parse_expression());
+                            if self.cursor.match_token(&TokenType::Comma) {
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+
+                    if self.cursor.check(&TokenType::RightParen) {
+                        end_span = self.cursor.advance().span;
+                    } else {
+                        self.error(ParserError::UnclosedParenthesis {
+                            start_line: open_token.span.start_line,
+                            start_column: open_token.span.start_column,
+                        });
+
+                        if let Some(last_arg) = arguments.last() {
+                            end_span = last_arg.span.clone();
+                        } else {
+                            end_span = open_token.span;
+                        }
+                    }
+                } else {
+                    self.error(ParserError::UnexpectedToken {
+                        expected: "(".to_string(),
+                        found: self.cursor.peek().lexeme.clone(),
+                    });
+                }
+
+                let full_span = span.merge(&end_span);
+                Expr::new_expr(type_reference, arguments, full_span)
+            }
             TokenType::RightParen => {
                 self.error(ParserError::UnmatchedClosingDelimiter { delimiter: ')' });
                 Expr::literal(Literal::Number(0.0), span)

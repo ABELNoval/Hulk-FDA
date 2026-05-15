@@ -881,6 +881,99 @@ mod tests_parser {
     }
 
     #[test]
+    fn test_parse_expression_return_with_value() {
+        let expr = parse_expression_tokens(vec![
+            create_token("return", TokenType::Return),
+            create_token("42", TokenType::Number(42.0)),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Return(value) => {
+                assert!(value.is_some());
+                assert!(matches!(value.unwrap().kind, ExprKind::Literal(Literal::Number(42.0))));
+            }
+            _ => panic!("se esperaba return con valor"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_return_without_value() {
+        let expr = parse_expression_tokens(vec![
+            create_token("return", TokenType::Return),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        match expr.kind {
+            ExprKind::Return(value) => assert!(value.is_none()),
+            _ => panic!("se esperaba return sin valor"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expression_break_keyword() {
+        let expr = parse_expression_tokens(vec![
+            create_token("break", TokenType::Break),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        assert!(matches!(expr.kind, ExprKind::Break));
+    }
+
+    #[test]
+    fn test_parse_expression_continue_keyword() {
+        let expr = parse_expression_tokens(vec![
+            create_token("continue", TokenType::Continue),
+            Token::eof("test".to_string(), 1, 1),
+        ]);
+
+        assert!(matches!(expr.kind, ExprKind::Continue));
+    }
+
+    #[test]
+    fn test_parse_while_with_break_body() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "while (true) break";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_expression();
+
+        match expr.kind {
+            ExprKind::While { body, .. } => {
+                assert!(matches!(body.kind, ExprKind::Break));
+            }
+            _ => panic!("se esperaba while con break en el body"),
+        }
+    }
+
+    #[test]
+    fn test_parse_function_with_return_body() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let code = "function f() => return 1";
+        let mut lexer = Lexer::new(code.to_string(), "test.hulk".to_string());
+        let tokens = lexer.tokenize();
+
+        let mut parser = Parser::new(tokens);
+        let declaration = parser.parse_declaration();
+
+        assert!(declaration.is_some());
+        let declaration = declaration.unwrap();
+
+        match declaration.kind {
+            DeclarationKind::Function(function) => {
+                assert!(matches!(function.body.kind, ExprKind::Return(_)));
+            }
+            _ => panic!("se esperaba declaración de función"),
+        }
+    }
+
+    #[test]
     fn test_parse_protocol_declaration() {
         use crate::lexer::Lexer;
         use crate::parser::Parser;

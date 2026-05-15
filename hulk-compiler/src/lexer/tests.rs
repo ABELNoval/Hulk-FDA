@@ -64,7 +64,7 @@ fn test_simple_expression() {
 // =========================================================
 #[test]
 fn test_keywords_and_identifiers() {
-    let input = "let x = if else true false variable";
+    let input = "let x = if else true false return break continue variable";
     print_tokens(input);
 
     let mut lexer = Lexer::new(input.into(), "test.hulk".into());
@@ -79,8 +79,12 @@ fn test_keywords_and_identifiers() {
     // Verificación de Booleanos
     assert_eq!(tokens[5].token_type, TokenType::True);
     assert_eq!(tokens[6].token_type, TokenType::False);
-    
-    assert!(matches!(tokens[7].token_type, TokenType::Identifier(_)));
+
+    assert_eq!(tokens[7].token_type, TokenType::Return);
+    assert_eq!(tokens[8].token_type, TokenType::Break);
+    assert_eq!(tokens[9].token_type, TokenType::Continue);
+
+    assert!(matches!(tokens[10].token_type, TokenType::Identifier(_)));
 }
 
 // =========================================================

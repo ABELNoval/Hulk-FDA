@@ -47,12 +47,16 @@ pub use ast::{Declaration, Expr, Literal, Program, TypeReference};
 #[derive(Debug, Clone)]
 pub struct Parser {
     cursor: TokenCursor,
+    loop_depth: usize,
+    function_depth: usize,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
         Self {
             cursor: TokenCursor::new(tokens),
+            loop_depth: 0,
+            function_depth: 0,
         }
     }
 
@@ -105,7 +109,13 @@ impl Parser {
     }
 
     pub fn parse_expression(&mut self) -> Expr {
-        if self.cursor.check(&TokenType::Let) {
+        if self.cursor.check(&TokenType::Return) {
+            self.parse_return_expr()
+        } else if self.cursor.check(&TokenType::Break) {
+            self.parse_break_expr()
+        } else if self.cursor.check(&TokenType::Continue) {
+            self.parse_continue_expr()
+        } else if self.cursor.check(&TokenType::Let) {
             self.parse_let_binding()
         } else if self.cursor.check(&TokenType::If) {
             self.parse_if_expr()
@@ -182,6 +192,42 @@ impl Parser {
         }
 
         Expr::literal(Literal::Number(0.0), start_span.merge(&end_span))
+    }
+
+    fn parse_return_expr(&mut self) -> Expr {
+        let return_token = self.cursor.advance();
+
+        if self.function_depth == 0 {
+            self.error(ParserError::ReturnOutsideFunction);
+        }
+
+        if self.is_expression_terminator() {
+            return Expr::return_expr(None, return_token.span);
+        }
+
+        let value = self.parse_expression();
+        let span = return_token.span.merge(&value.span);
+        Expr::return_expr(Some(value), span)
+    }
+
+    fn parse_break_expr(&mut self) -> Expr {
+        let break_token = self.cursor.advance();
+
+        if self.loop_depth == 0 {
+            self.error(ParserError::BreakOutsideLoop);
+        }
+
+        Expr::break_expr(break_token.span)
+    }
+
+    fn parse_continue_expr(&mut self) -> Expr {
+        let continue_token = self.cursor.advance();
+
+        if self.loop_depth == 0 {
+            self.error(ParserError::ContinueOutsideLoop);
+        }
+
+        Expr::continue_expr(continue_token.span)
     }
 
     fn parse_single_let_binding(&mut self) -> Option<Expr> {
@@ -299,7 +345,9 @@ impl Parser {
             self.synchronize();
         }
 
+        self.loop_depth += 1;
         let body = self.parse_expression();
+        self.loop_depth = self.loop_depth.saturating_sub(1);
         let end_span = body.span.clone();
         let span = start_span.merge(&end_span);
         Expr::while_expr(condition, body, span)
@@ -336,7 +384,9 @@ impl Parser {
         }
 
         let iterable = self.parse_expression();
+        self.loop_depth += 1;
         let body = self.parse_expression();
+        self.loop_depth = self.loop_depth.saturating_sub(1);
         let end_span = body.span.clone();
         let span = start_span.merge(&end_span);
         Expr::for_expr(variable, iterable, body, span)
@@ -765,6 +815,11 @@ impl Parser {
         }
     }
 
+    fn is_expression_terminator(&self) -> bool {
+        self.cursor
+            .check_any(&[TokenType::Semicolon, TokenType::RightBrace, TokenType::Eof])
+    }
+
     /// Parse una declaración de función top-level.
     ///
     /// Gramática (MVP):
@@ -804,15 +859,18 @@ impl Parser {
             None
         };
 
+        self.function_depth += 1;
         let body = if self.cursor.match_token(&TokenType::Arrow) {
             self.parse_expression()
         } else if self.cursor.check(&TokenType::LeftBrace) {
             self.parse_block()
         } else {
             self.error(ParserError::ExpectedFunctionBody);
+            self.function_depth = self.function_depth.saturating_sub(1);
             self.synchronize();
             return None;
         };
+        self.function_depth = self.function_depth.saturating_sub(1);
 
         let span = start_span.merge(&body.span);
 

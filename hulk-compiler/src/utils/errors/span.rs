@@ -53,3 +53,9 @@ impl Span {
         )
     }
 }
+
+impl Default for Span {
+    fn default() -> Self {
+        Self::new(String::new(), 0, 0, 0, 0)
+    }
+}

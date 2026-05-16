@@ -91,7 +91,7 @@ impl SemanticAnalyzer {
     pub fn new() -> Self {
         let mut context = SemanticContext::new();
         // TODO: Declarar builtins (print, sqrt, sin, cos, log, exp, rand)
-        // context.symbols.declare_builtins();
+        context.symbols.declare_builtins();
         Self { context }
     }
 
@@ -112,13 +112,8 @@ impl SemanticAnalyzer {
     /// 2. Procesar expresión de entrada (si existe)
     /// 3. Retornar lista de errores (si las hay)
     pub fn analyze(&mut self, program: &Program) -> SemanticResult<()> {
-        // TODO: Implementar análisis completo
-        // 1. Procesar declaraciones en orden:
-        //    - Registrar tipos
-        //    - Registrar protocolos
-        //    - Verificar funciones
-        // 2. Procesar entrada si existe
-        // 3. Retornar Ok(()) si no hay errores, Err si hay
+        self.check_declarations(program)?;
+        self.check_entry_expression(program)?;
 
         if self.context.has_errors() {
             return Err(self.context.errors[0].clone());
@@ -176,6 +171,7 @@ impl Default for SemanticAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::errors::span::Span;
 
     #[test]
     fn test_semantic_analyzer_new() {
@@ -192,11 +188,10 @@ mod tests {
     #[test]
     fn test_context_push_error() {
         let mut ctx = SemanticContext::new();
-        let error = SemanticError::new(
-            SemanticErrorKind::UndefinedSymbol,
-            Span::default(),
-            "Test error",
-        );
+        let _span = Span::default();
+        let error = SemanticError::UnsupportedFeature {
+            feature: "Test error".to_string(),
+        };
         ctx.push_error(error);
         assert!(ctx.has_errors());
         assert_eq!(ctx.get_errors().len(), 1);
@@ -205,11 +200,10 @@ mod tests {
     #[test]
     fn test_context_clear_errors() {
         let mut ctx = SemanticContext::new();
-        let error = SemanticError::new(
-            SemanticErrorKind::UndefinedSymbol,
-            Span::default(),
-            "Test error",
-        );
+        let _span = Span::default();
+        let error = SemanticError::UnsupportedFeature {
+            feature: "Test error".to_string(),
+        };
         ctx.push_error(error);
         assert!(ctx.has_errors());
         ctx.clear_errors();

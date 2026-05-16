@@ -15,9 +15,9 @@
 //
 // =============================================================================
 
-use crate::parser::ast::{Expr, ExprKind, BinOp};
-use crate::utils::errors::semantic::SemanticError;
+use crate::parser::ast::{BinaryOperator, Expr, ExprKind, Literal};
 use crate::semantic::type_system::NormalizedType;
+use crate::utils::errors::semantic::SemanticError;
 use crate::utils::errors::span::Span;
 
 type SemanticResult<T> = Result<T, SemanticError>;
@@ -61,20 +61,14 @@ impl ExpressionChecker {
     /// - true/false: Boolean
     pub fn check_literal(&self, expr: &Expr) -> SemanticResult<ExpressionType> {
         match &expr.kind {
-            ExprKind::Number(_) => {
+            ExprKind::Literal(Literal::Number(_)) | ExprKind::Literal(Literal::Pi) | ExprKind::Literal(Literal::E) => {
                 Ok(ExpressionType::value(NormalizedType::Number))
             }
-            ExprKind::String(_) => {
-                Ok(ExpressionType::value(NormalizedType::String))
-            }
-            ExprKind::True | ExprKind::False => {
-                Ok(ExpressionType::value(NormalizedType::Boolean))
-            }
-            _ => {
-                Err(SemanticError::UnsupportedFeature {
-                    feature: "Expected literal expression".to_string(),
-                })
-            }
+            ExprKind::Literal(Literal::String(_)) => Ok(ExpressionType::value(NormalizedType::String)),
+            ExprKind::Literal(Literal::Boolean(_)) => Ok(ExpressionType::value(NormalizedType::Boolean)),
+            _ => Err(SemanticError::UnsupportedFeature {
+                feature: "Expected literal expression".to_string(),
+            }),
         }
     }
 
@@ -87,7 +81,7 @@ impl ExpressionChecker {
     pub fn check_binary_op(
         &self,
         left_type: &NormalizedType,
-        op: &BinOp,
+        op: &BinaryOperator,
         right_type: &NormalizedType,
         _span: &Span,
     ) -> SemanticResult<ExpressionType> {
@@ -97,12 +91,12 @@ impl ExpressionChecker {
         // - Reportar errors específicos (ej: "Cannot add String to Number")
 
         let result_type = match op {
-            BinOp::Plus
-            | BinOp::Minus
-            | BinOp::Star
-            | BinOp::Slash
-            | BinOp::Percent
-            | BinOp::Caret => {
+            BinaryOperator::Add
+            | BinaryOperator::Subtract
+            | BinaryOperator::Multiply
+            | BinaryOperator::Divide
+            | BinaryOperator::Modulo
+            | BinaryOperator::Power => {
                 // Aritmética: requiere Number
                 if left_type == &NormalizedType::Number && right_type == &NormalizedType::Number {
                     NormalizedType::Number
@@ -114,7 +108,7 @@ impl ExpressionChecker {
                     });
                 }
             }
-            BinOp::At | BinOp::AtAt => {
+            BinaryOperator::Concat | BinaryOperator::Concatenate => {
                 // Concatenación: requiere String
                 if left_type == &NormalizedType::String && right_type == &NormalizedType::String {
                     NormalizedType::String
@@ -126,8 +120,12 @@ impl ExpressionChecker {
                     });
                 }
             }
-            BinOp::Equal | BinOp::NotEqual | BinOp::Less | BinOp::LessEqual
-            | BinOp::Greater | BinOp::GreaterEqual => {
+            BinaryOperator::Equal
+            | BinaryOperator::NotEqual
+            | BinaryOperator::Less
+            | BinaryOperator::LessEqual
+            | BinaryOperator::Greater
+            | BinaryOperator::GreaterEqual => {
                 // Comparación: requiere tipos iguales
                 if left_type == right_type {
                     NormalizedType::Boolean
@@ -138,7 +136,7 @@ impl ExpressionChecker {
                     });
                 }
             }
-            BinOp::And | BinOp::Or => {
+            BinaryOperator::And | BinaryOperator::Or => {
                 // Lógica: requiere Boolean
                 if left_type == &NormalizedType::Boolean && right_type == &NormalizedType::Boolean {
                     NormalizedType::Boolean
@@ -241,17 +239,22 @@ impl ExpressionChecker {
             });
         }
 
-        // TODO: Inferir tipo de unificación entre then y else
+        if let Some(else_type) = else_type {
+            if then_type != else_type {
+                return Err(SemanticError::IncompatibleBranchTypes {
+                    then_type: then_type.to_string(),
+                    else_type: else_type.to_string(),
+                });
+            }
+        }
+
         Ok(ExpressionType::value(then_type.clone()))
     }
 
     /// Verifica tipo de un bloque de expresiones
     ///
     /// El tipo es el tipo de la última expresión
-    pub fn check_block(
-        &self,
-        last_expr_type: &NormalizedType,
-    ) -> SemanticResult<ExpressionType> {
+    pub fn check_block(&self, last_expr_type: &NormalizedType) -> SemanticResult<ExpressionType> {
         Ok(ExpressionType::value(last_expr_type.clone()))
     }
 
@@ -268,7 +271,9 @@ impl ExpressionChecker {
         // TODO: Implementar type checking de new
         // - Validar que el tipo existe
         // - Validar argumentos al constructor
-        Ok(ExpressionType::value(NormalizedType::Named(type_name.to_string())))
+        Ok(ExpressionType::value(NormalizedType::Named(
+            type_name.to_string(),
+        )))
     }
 
     /// Verifica tipo de operación is (type check)

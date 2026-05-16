@@ -12,9 +12,9 @@
 //
 // =============================================================================
 
-use crate::parser::ast::{TypeReference, TypeReferenceKind, FunctionDeclaration, ProtocolMember};
+use crate::parser::ast::{FunctionDeclaration, ProtocolMethodSignature, TypeReference, TypeReferenceKind};
 use crate::utils::errors::span::Span;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Información sobre un tipo declarado
 #[derive(Debug, Clone)]
@@ -31,7 +31,7 @@ pub struct TypeInfo {
 #[derive(Debug, Clone)]
 pub struct ProtocolInfo {
     pub name: String,
-    pub members: Vec<ProtocolMember>,
+    pub members: Vec<ProtocolMethodSignature>,
     pub span: Span,
 }
 
@@ -186,8 +186,8 @@ impl TypeEnvironment {
     /// Verifica si un tipo conforma a un protocolo
     pub fn type_conforms_to_protocol(
         &self,
-        type_name: &str,
-        protocol_name: &str,
+        _type_name: &str,
+        _protocol_name: &str,
     ) -> bool {
         // TODO: Implementar conformancia
         // - El tipo debe implementar todos los métodos del protocolo

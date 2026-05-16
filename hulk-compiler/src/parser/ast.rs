@@ -33,7 +33,6 @@ impl Declaration {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeclarationKind {
     Function(FunctionDeclaration),
-    Variable(VariableDeclaration),
     Type(TypeDeclaration),
     Protocol(ProtocolDeclaration),
 }
@@ -44,13 +43,6 @@ pub struct FunctionDeclaration {
     pub parameters: Vec<Parameter>,
     pub return_type: Option<TypeReference>,
     pub body: Expr,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct VariableDeclaration {
-    pub name: String,
-    pub annotation: Option<TypeReference>,
-    pub value: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

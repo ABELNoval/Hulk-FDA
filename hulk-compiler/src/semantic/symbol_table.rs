@@ -77,28 +77,26 @@ impl SymbolInfo {
 /// Mantiene múltiples niveles de scopes (jerarquía).
 /// - Scope 0: global (builtins, declaraciones de funciones/tipos/protocolos)
 /// - Scope 1+: locales (let expressions, function bodies)
+///
+
 pub struct SymbolTable {
     /// Stack de scopes. El primero es el global, los demás son locales.
     scopes: Vec<HashMap<String, SymbolInfo>>,
 }
 
 impl SymbolTable {
-    /// Crea una nueva tabla de símbolos vacía (con un scope global)
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
         }
     }
 
-    /// Ingresa a un nuevo scope (por ejemplo, al entrar a un let o función)
+    
     pub fn enter_scope(&mut self) {
         self.scopes.push(HashMap::new());
     }
 
-    /// Sale del scope actual (por ejemplo, al salir de un let o función)
-    ///
-    /// # Panics
-    /// Si se intenta salir del scope global
+    
     pub fn exit_scope(&mut self) {
         if self.scopes.len() > 1 {
             self.scopes.pop();
@@ -107,15 +105,11 @@ impl SymbolTable {
         }
     }
 
-    /// Retorna la profundidad actual de scopes
+   
     pub fn scope_depth(&self) -> usize {
         self.scopes.len()
     }
 
-    /// Declara un nuevo símbolo en el scope actual
-    ///
-    /// Retorna error si ya existe un símbolo con el mismo nombre en el scope actual.
-    /// (Nota: puede existir con el mismo nombre en otros scopes, eso es shadowing)
     pub fn declare(&mut self, symbol: SymbolInfo) -> Result<(), String> {
         let scope = self.scopes.last_mut().expect("At least global scope exists");
 
@@ -127,10 +121,6 @@ impl SymbolTable {
         Ok(())
     }
 
-    /// Busca un símbolo en la tabla
-    ///
-    /// Comienza en el scope actual y sube recursivamente hasta el global.
-    /// Retorna None si el símbolo no está declarado en ningún scope.
     pub fn lookup(&self, name: &str) -> Option<SymbolInfo> {
         for scope in self.scopes.iter().rev() {
             if let Some(symbol) = scope.get(name) {
@@ -140,7 +130,6 @@ impl SymbolTable {
         None
     }
 
-    /// Busca un símbolo solo en el scope actual (no en padres)
     pub fn lookup_local(&self, name: &str) -> Option<SymbolInfo> {
         self.scopes
             .last()
@@ -155,10 +144,49 @@ impl SymbolTable {
             .unwrap_or_default()
     }
 
+    /// Verifica si un símbolo está declarado en algún scope (sin retornarlo)
+
+    pub fn is_symbol_declared(&self, name: &str) -> bool {
+        self.lookup(name).is_some()
+    }
+
+    /// Verifica si estamos en el scope global
+  
+    pub fn is_global_scope(&self) -> bool {
+        self.scope_depth() == 1
+    }
+
+    /// Retorna el símbolo o un error descriptivo
+    pub fn get_symbol(&self, name: &str) -> Result<SymbolInfo, String> {
+        self.lookup(name)
+            .ok_or_else(|| format!("Symbol '{}' is not declared", name))
+    }
+
+    /// Lista todos los símbolos desde el scope actual hacia el global (para debugging)
+    
+    pub fn all_symbols_in_chain(&self) -> Vec<(usize, String, SymbolInfo)> {
+        let mut result = Vec::new();
+        
+        for (scope_idx, scope) in self.scopes.iter().enumerate().rev() {
+            for (name, symbol) in scope {
+                result.push((scope_idx, name.clone(), symbol.clone()));
+            }
+        }
+        
+        result
+    }
+
+    /// Lista solo los símbolos en el scope global
+
+    pub fn global_symbols(&self) -> Vec<SymbolInfo> {
+        self.scopes
+            .first()
+            .map(|scope| scope.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Declara los símbolos builtin globales (print, sqrt, sin, cos, log, exp, rand)
-    ///
-    /// Esta función se llama una sola vez al inicializar el analizador semántico.
-    /// Los builtins no tienen tipos anotados (se detectan en tiempo de ejecución).
+  
     pub fn declare_builtins(&mut self) {
         // TODO: Implementar declaración de builtins
         // - print(value: ?)

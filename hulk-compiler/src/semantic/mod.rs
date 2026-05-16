@@ -31,6 +31,9 @@ pub mod expression_checker;
 pub mod symbol_table;
 pub mod type_system;
 
+#[cfg(test)]
+mod test_symbol_table;
+
 #[allow(unused_imports)]
 pub use analyzer::{SemanticAnalyzer, SemanticContext};
 #[allow(unused_imports)]

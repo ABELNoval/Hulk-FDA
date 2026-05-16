@@ -3,6 +3,7 @@
 // =============================================================================
 
 use super::symbol_table::*;
+use crate::parser::ast::TypeReference;
 use crate::utils::errors::span::Span;
 
 #[test]
@@ -957,4 +958,290 @@ fn test_let_expression_with_different_symbol_types() {
     assert!(table.lookup("my_var").is_none());
     assert!(table.lookup("my_param").is_none());
     assert!(table.lookup("LocalType").is_none());
+}
+
+// ===== TAREA 5: FUNCTION PARAMETERS AND LOCAL BINDINGS =====
+
+#[test]
+fn test_function_parameter_simple_resolution() {
+    // Simula: function foo(x: Number) { x }
+    // Parámetro debe ser resolvible dentro del function body
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Paso 1: Declarar función en global scope
+    let func_foo = SymbolInfo::Function {
+        name: "foo".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(func_foo).unwrap();
+
+    // foo es resolvible globalmente
+    assert!(table.lookup("foo").is_some());
+
+    // Paso 2: Entrar a scope de la función
+    table.enter_scope();
+
+    // Paso 3: Declarar parámetro x
+    let param_x = SymbolInfo::Parameter {
+        name: "x".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(param_x).unwrap();
+
+    // Paso 4: x es resolvible dentro de la función
+    assert!(table.lookup("x").is_some());
+    assert!(table.lookup_local("x").is_some());
+    
+    // La función también sigue siendo accesible (global scope)
+    assert!(table.lookup("foo").is_some());
+
+    // Paso 5: Salir del scope
+    table.exit_scope();
+
+    // Paso 6: x no es resolvible fuera de la función
+    assert!(table.lookup("x").is_none());
+    // Pero la función sigue siendo accesible
+    assert!(table.lookup("foo").is_some());
+}
+
+#[test]
+fn test_function_multiple_parameters() {
+    // Simula: function add(x: Number, y: Number) { x + y }
+    // Todos los parámetros deben ser resolvibles
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Entrar a scope de la función
+    table.enter_scope();
+
+    // Declarar múltiples parámetros
+    let param_x = SymbolInfo::Parameter {
+        name: "x".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    let param_y = SymbolInfo::Parameter {
+        name: "y".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    let param_z = SymbolInfo::Parameter {
+        name: "z".to_string(),
+        type_ref: Some(TypeReference::new("String".to_string(), span.clone())),
+        span: span.clone(),
+    };
+
+    table.declare(param_x).unwrap();
+    table.declare(param_y).unwrap();
+    table.declare(param_z).unwrap();
+
+    // Todos los parámetros son resolvibles
+    assert!(table.lookup("x").is_some());
+    assert!(table.lookup("y").is_some());
+    assert!(table.lookup("z").is_some());
+
+    // Todos están en el scope local actual
+    assert!(table.lookup_local("x").is_some());
+    assert!(table.lookup_local("y").is_some());
+    assert!(table.lookup_local("z").is_some());
+
+    // Tratamos de declarar un parámetro duplicado - error
+    let param_x_dup = SymbolInfo::Parameter {
+        name: "x".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    assert!(table.declare(param_x_dup).is_err());
+
+    table.exit_scope();
+
+    // Ninguno es resolvible fuera de la función
+    assert!(table.lookup("x").is_none());
+    assert!(table.lookup("y").is_none());
+    assert!(table.lookup("z").is_none());
+}
+
+#[test]
+fn test_function_parameter_shadowing_with_local_variable() {
+    // Simula: function foo(x: Number) { let x = "hello" in x }
+    // Variable local puede sombrear parámetro
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Entrar a scope de la función
+    table.enter_scope();
+
+    // Declarar parámetro x (Number)
+    let param_x = SymbolInfo::Parameter {
+        name: "x".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(param_x).unwrap();
+
+    // x es parámetro
+    assert!(table.lookup("x").is_some());
+    assert!(table.lookup_local("x").is_some());
+
+    // Entrar a scope de let expression
+    table.enter_scope();
+
+    // Declarar variable x (String) que sombrea el parámetro
+    let var_x = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: Some(TypeReference::new("String".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(var_x).unwrap();
+
+    // lookup("x") encuentra la variable (la más cercana)
+    assert!(table.lookup("x").is_some());
+    // lookup_local("x") también encuentra la variable
+    assert!(table.lookup_local("x").is_some());
+
+    table.exit_scope();
+
+    // Después del let, lookup("x") nuevamente encuentra el parámetro
+    assert!(table.lookup("x").is_some());
+    assert!(table.lookup_local("x").is_some());
+
+    table.exit_scope();
+
+    // Fuera de la función, x no existe
+    assert!(table.lookup("x").is_none());
+}
+
+#[test]
+fn test_function_parameter_not_accessible_outside_scope() {
+    // Verifica que los parámetros están completamente aislados a la función
+    // Simula: function foo(x: Number) { x }
+    //         foo  <- x no debería estar accesible aquí
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar función en global
+    let func = SymbolInfo::Function {
+        name: "foo".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(func).unwrap();
+
+    // Entrar a scope de la función y declarar parámetro
+    table.enter_scope();
+    let param_x = SymbolInfo::Parameter {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(param_x).unwrap();
+
+    // Dentro de la función, x está disponible
+    assert!(table.lookup("x").is_some());
+
+    table.exit_scope();
+
+    // Después de salir, x no está disponible
+    assert!(table.lookup("x").is_none());
+    // Pero la función sí
+    assert!(table.lookup("foo").is_some());
+}
+
+#[test]
+fn test_nested_function_parameter_isolation() {
+    // Simula:
+    // function outer(a: Number) {
+    //   function inner(b: Number) { b }
+    //   a
+    // }
+    // Los parámetros de inner no están visibles en outer
+    // Las funciones declaradas localmente (inner) solo son visibles en su scope
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar outer en global
+    let outer_func = SymbolInfo::Function {
+        name: "outer".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(outer_func).unwrap();
+
+    // Entrar a scope de outer
+    table.enter_scope();
+
+    // Declarar parámetro a de outer
+    let param_a = SymbolInfo::Parameter {
+        name: "a".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(param_a).unwrap();
+
+    // a es resolvible
+    assert!(table.lookup("a").is_some());
+
+    // Declarar inner dentro de outer (es un símbolo local de outer)
+    let inner_func = SymbolInfo::Function {
+        name: "inner".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(inner_func).unwrap();
+
+    // Entrar a scope de inner
+    table.enter_scope();
+
+    // Declarar parámetro b de inner
+    let param_b = SymbolInfo::Parameter {
+        name: "b".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(param_b).unwrap();
+
+    // Dentro de inner:
+    // b es resolvible (local)
+    assert!(table.lookup("b").is_some());
+    // a es resolvible (del parent scope de outer)
+    assert!(table.lookup("a").is_some());
+    // inner es resolvible (local a outer)
+    assert!(table.lookup("inner").is_some());
+    // outer es resolvible (global)
+    assert!(table.lookup("outer").is_some());
+
+    table.exit_scope();  // Salir de inner
+
+    // Dentro de outer (después de inner):
+    // b no es resolvible (era parámetro de inner)
+    assert!(table.lookup("b").is_none());
+    // a es resolvible (local a outer)
+    assert!(table.lookup("a").is_some());
+    // inner sigue siendo resolvible (local a outer)
+    assert!(table.lookup("inner").is_some());
+    // outer es resolvible (global)
+    assert!(table.lookup("outer").is_some());
+
+    table.exit_scope();  // Salir de outer
+
+    // En global:
+    // Ni a ni b están disponibles (eran locales a outer)
+    assert!(table.lookup("a").is_none());
+    assert!(table.lookup("b").is_none());
+    // inner no es resolvible (era local a outer)
+    assert!(table.lookup("inner").is_none());
+    // Pero outer sí es resolvible (está en global)
+    assert!(table.lookup("outer").is_some());
 }

@@ -453,15 +453,52 @@ impl ExpressionChecker {
     pub fn check_new(
         &self,
         type_name: &str,
-        _argument_types: &[NormalizedType],
+        argument_types: &[NormalizedType],
+        expected_params: Option<&[(String, NormalizedType)]>,
         _span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        // TODO: Implementar type checking de new
-        // - Validar que el tipo existe
-        // - Validar argumentos al constructor
+        if let Some(params) = expected_params {
+            if argument_types.len() != params.len() {
+                return Err(SemanticError::InvalidConstructor {
+                    type_name: type_name.to_string(),
+                    reason: format!("esperaba {} argumentos, recibió {}", params.len(), argument_types.len()),
+                });
+            }
+
+            for (i, (arg_type, (param_name, param_type))) in argument_types.iter().zip(params.iter()).enumerate() {
+                if arg_type != param_type && arg_type != &NormalizedType::Unknown && param_type != &NormalizedType::Unknown {
+                    return Err(SemanticError::ArgumentTypeMismatch {
+                        function: type_name.to_string(),
+                        parameter_name: param_name.to_string(),
+                        parameter_position: i,
+                        expected: param_type.to_string(),
+                        found: arg_type.to_string(),
+                    });
+                }
+            }
+        }
         Ok(ExpressionType::value(NormalizedType::Named(
             type_name.to_string(),
         )))
+    }
+
+    /// Verifica tipo de un acceso a miembro (obj.member)
+    pub fn check_member_access(
+        &self,
+        object_type: &NormalizedType,
+        member_name: &str,
+        member_type: Option<&NormalizedType>,
+        _span: &Span,
+    ) -> SemanticResult<ExpressionType> {
+        if let Some(m_type) = member_type {
+            // Propiedades suelen ser lvalues, por convención asignamos true. Dependerá de las reglas si son mutables.
+            Ok(ExpressionType::lvalue(m_type.clone()))
+        } else {
+            Err(SemanticError::MemberNotFound {
+                type_name: object_type.to_string(),
+                member_name: member_name.to_string(),
+            })
+        }
     }
 
     /// Verifica tipo de operación is (type check)
@@ -791,20 +828,86 @@ mod tests {
     }
 
     #[test]
-    fn test_function_call_custom_valid() {
+    fn test_new_expression_valid() {
         let checker = ExpressionChecker::new();
         let expected_params = vec![
-            ("x".to_string(), NormalizedType::Number),
-            ("y".to_string(), NormalizedType::String)
+            ("age".to_string(), NormalizedType::Number)
         ];
-        
-        let result = checker.check_function_call(
-            "my_func",
-            &[NormalizedType::Number, NormalizedType::String],
+        let result = checker.check_new(
+            "Person",
+            &[NormalizedType::Number],
             Some(&expected_params),
-            Some(&NormalizedType::Boolean),
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Named("Person".to_string()));
+    }
+
+    #[test]
+    fn test_new_expression_invalid_args() {
+        let checker = ExpressionChecker::new();
+        let expected_params = vec![
+            ("age".to_string(), NormalizedType::Number)
+        ];
+        let result = checker.check_new(
+            "Person",
+            &[NormalizedType::String],
+            Some(&expected_params),
+            &Span::default()
+        );
+        assert!(matches!(result, Err(SemanticError::ArgumentTypeMismatch { .. })));
+
+        let result_count = checker.check_new(
+            "Person",
+            &[],
+            Some(&expected_params),
+            &Span::default()
+        );
+        assert!(matches!(result_count, Err(SemanticError::InvalidConstructor { .. })));
+    }
+
+    #[test]
+    fn test_member_access_valid() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_member_access(
+            &NormalizedType::Named("Person".to_string()),
+            "age",
+            Some(&NormalizedType::Number),
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Number);
+    }
+
+    #[test]
+    fn test_member_access_invalid() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_member_access(
+            &NormalizedType::Named("Person".to_string()),
+            "unknown_field",
+            None,
+            &Span::default()
+        );
+        assert!(matches!(result, Err(SemanticError::MemberNotFound { .. })));
+    }
+
+    #[test]
+    fn test_is_operator() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_is(
+            &NormalizedType::Number,
+            &NormalizedType::Named("Object".to_string()),
             &Span::default()
         ).unwrap();
         assert_eq!(result.type_, NormalizedType::Boolean);
+    }
+
+    #[test]
+    fn test_as_operator() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_as(
+            &NormalizedType::Number,
+            &NormalizedType::Named("Object".to_string()),
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Named("Object".to_string()));
     }
 }

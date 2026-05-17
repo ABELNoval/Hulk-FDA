@@ -66,8 +66,8 @@ impl ExpressionChecker {
             }
             ExprKind::Literal(Literal::String(_)) => Ok(ExpressionType::value(NormalizedType::String)),
             ExprKind::Literal(Literal::Boolean(_)) => Ok(ExpressionType::value(NormalizedType::Boolean)),
-            _ => Err(SemanticError::UnsupportedFeature {
-                feature: "Expected literal expression".to_string(),
+            _ => Err(SemanticError::UnsupportedExpression {
+                expression_type: "expected literal expression".to_string(),
             }),
         }
     }
@@ -430,8 +430,8 @@ impl ExpressionChecker {
         _span: &Span,
     ) -> SemanticResult<ExpressionType> {
         if !target_type.is_lvalue {
-            return Err(SemanticError::AssignmentToImmutable {
-                name: "expresión no asignable (no es un lvalue)".to_string(),
+            return Err(SemanticError::InvalidTarget {
+                context: "asignación (no es lvalue)".to_string(),
             });
         }
 
@@ -825,7 +825,7 @@ mod tests {
             &NormalizedType::Number,
             &Span::default()
         );
-        assert!(matches!(result, Err(SemanticError::AssignmentToImmutable { .. })));
+        assert!(matches!(result, Err(SemanticError::InvalidTarget { .. })));
     }
 
     #[test]

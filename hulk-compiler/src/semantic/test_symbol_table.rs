@@ -1890,3 +1890,545 @@ fn test_semantic_error_heuristic_lowercase_vs_uppercase() {
         _ => panic!("Expected UndeclaredVariable for digit-start name"),
     }
 }
+
+// ===== TAREA 8: EXPOSE SAFE API FOR OTHER MODULES =====
+
+#[test]
+fn test_safe_api_is_function() {
+    // Verifica que is_function() retorna true solo para funciones
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let func = SymbolInfo::Function {
+        name: "add".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(func).unwrap();
+
+    let var = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var).unwrap();
+
+    // is_function() retorna true solo para funciones
+    assert!(table.is_function("add"));
+    assert!(!table.is_function("x"));
+    assert!(!table.is_function("undefined"));
+}
+
+#[test]
+fn test_safe_api_is_variable() {
+    // Verifica que is_variable() retorna true solo para variables
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let func = SymbolInfo::Function {
+        name: "foo".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(func).unwrap();
+
+    let var = SymbolInfo::Variable {
+        name: "count".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var).unwrap();
+
+    assert!(!table.is_variable("foo"));
+    assert!(table.is_variable("count"));
+    assert!(!table.is_variable("undefined"));
+}
+
+#[test]
+fn test_safe_api_is_parameter() {
+    // Verifica que is_parameter() retorna true solo para parámetros
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    table.enter_scope();
+
+    let param = SymbolInfo::Parameter {
+        name: "x".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(param).unwrap();
+
+    let var = SymbolInfo::Variable {
+        name: "y".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var).unwrap();
+
+    assert!(table.is_parameter("x"));
+    assert!(!table.is_parameter("y"));
+    assert!(!table.is_parameter("undefined"));
+
+    table.exit_scope();
+}
+
+#[test]
+fn test_safe_api_is_type() {
+    // Verifica que is_type() retorna true solo para tipos
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let typ = SymbolInfo::Type {
+        name: "Point".to_string(),
+        span: span.clone(),
+    };
+    table.declare(typ).unwrap();
+
+    let var = SymbolInfo::Variable {
+        name: "point".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var).unwrap();
+
+    assert!(table.is_type("Point"));
+    assert!(!table.is_type("point"));
+    assert!(!table.is_type("undefined"));
+}
+
+#[test]
+fn test_safe_api_is_protocol() {
+    // Verifica que is_protocol() retorna true solo para protocolos
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let proto = SymbolInfo::Protocol {
+        name: "Drawable".to_string(),
+        span: span.clone(),
+    };
+    table.declare(proto).unwrap();
+
+    let typ = SymbolInfo::Type {
+        name: "Circle".to_string(),
+        span: span.clone(),
+    };
+    table.declare(typ).unwrap();
+
+    assert!(table.is_protocol("Drawable"));
+    assert!(!table.is_protocol("Circle"));
+    assert!(!table.is_protocol("undefined"));
+}
+
+#[test]
+fn test_safe_api_get_symbol_kind() {
+    // Verifica que get_symbol_kind() retorna el tipo correcto
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let func = SymbolInfo::Function {
+        name: "calculate".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(func).unwrap();
+
+    let var = SymbolInfo::Variable {
+        name: "result".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var).unwrap();
+
+    let typ = SymbolInfo::Type {
+        name: "Value".to_string(),
+        span: span.clone(),
+    };
+    table.declare(typ).unwrap();
+
+    assert_eq!(table.get_symbol_kind("calculate"), Some("function"));
+    assert_eq!(table.get_symbol_kind("result"), Some("variable"));
+    assert_eq!(table.get_symbol_kind("Value"), Some("type"));
+    assert_eq!(table.get_symbol_kind("undefined"), None);
+}
+
+#[test]
+fn test_safe_api_functions_in_scope() {
+    // Verifica que functions_in_scope() retorna solo funciones del scope actual
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let func1 = SymbolInfo::Function {
+        name: "add".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    let func2 = SymbolInfo::Function {
+        name: "multiply".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    let var = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+
+    table.declare(func1).unwrap();
+    table.declare(func2).unwrap();
+    table.declare(var).unwrap();
+
+    let funcs = table.functions_in_scope();
+    assert_eq!(funcs.len(), 2);
+    let names: Vec<&str> = funcs.iter().map(|f| f.name()).collect();
+    assert!(names.contains(&"add"));
+    assert!(names.contains(&"multiply"));
+}
+
+#[test]
+fn test_safe_api_global_functions() {
+    // Verifica que global_functions() retorna funciones globales
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let func1 = SymbolInfo::Function {
+        name: "globalFunc1".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    let func2 = SymbolInfo::Function {
+        name: "globalFunc2".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+
+    table.declare(func1).unwrap();
+    table.declare(func2).unwrap();
+
+    // Entrar a scope local y declarar función local
+    table.enter_scope();
+    let local_func = SymbolInfo::Function {
+        name: "localFunc".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(local_func).unwrap();
+    table.exit_scope();
+
+    // global_functions() solo retorna funciones globales
+    let global_funcs = table.global_functions();
+    assert_eq!(global_funcs.len(), 2);
+    let names: Vec<&str> = global_funcs.iter().map(|f| f.name()).collect();
+    assert!(names.contains(&"globalFunc1"));
+    assert!(names.contains(&"globalFunc2"));
+    assert!(!names.contains(&"localFunc"));
+}
+
+#[test]
+fn test_safe_api_symbol_count_in_scope() {
+    // Verifica que symbol_count_in_scope() cuenta correctamente
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    assert_eq!(table.symbol_count_in_scope(), 0);
+
+    let var1 = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var1).unwrap();
+    assert_eq!(table.symbol_count_in_scope(), 1);
+
+    let var2 = SymbolInfo::Variable {
+        name: "y".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var2).unwrap();
+    assert_eq!(table.symbol_count_in_scope(), 2);
+
+    table.enter_scope();
+    assert_eq!(table.symbol_count_in_scope(), 0);  // Nuevo scope está vacío
+
+    let var3 = SymbolInfo::Variable {
+        name: "z".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var3).unwrap();
+    assert_eq!(table.symbol_count_in_scope(), 1);
+
+    table.exit_scope();
+    assert_eq!(table.symbol_count_in_scope(), 2);  // De vuelta a 2 en scope global
+}
+
+#[test]
+fn test_safe_api_total_symbol_count() {
+    // Verifica que total_symbol_count() cuenta en todos los scopes
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let var1 = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var1).unwrap();
+    assert_eq!(table.total_symbol_count(), 1);
+
+    table.enter_scope();
+    let var2 = SymbolInfo::Variable {
+        name: "y".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var2).unwrap();
+    assert_eq!(table.total_symbol_count(), 2);  // x + y
+
+    table.enter_scope();
+    let var3 = SymbolInfo::Variable {
+        name: "z".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var3).unwrap();
+    assert_eq!(table.total_symbol_count(), 3);  // x + y + z
+
+    table.exit_scope();
+    table.exit_scope();
+}
+
+#[test]
+fn test_safe_api_resolve_symbol_info() {
+    // Verifica que resolve_symbol_info() retorna info completa
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let func = SymbolInfo::Function {
+        name: "myFunc".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(func).unwrap();
+
+    let info = table.resolve_symbol_info("myFunc");
+    assert!(info.is_some());
+
+    let (sym, scope_idx, kind) = info.unwrap();
+    assert_eq!(sym.name(), "myFunc");
+    assert_eq!(scope_idx, 0);  // Global scope (índice 0)
+    assert_eq!(kind, "function");
+}
+
+#[test]
+fn test_safe_api_symbol_availability() {
+    // Verifica que symbol_availability() retorna la información correcta
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Variable en global
+    let var_global = SymbolInfo::Variable {
+        name: "globalVar".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var_global).unwrap();
+
+    // Cuando estamos en global, globalVar es local al scope actual (que es global)
+    let (exists, is_local, is_global) = table.symbol_availability("globalVar");
+    assert!(exists);
+    assert!(is_local);     // Es local porque estamos en el scope global
+    assert!(is_global);
+
+    // Variable en scope local
+    table.enter_scope();
+    let var_local = SymbolInfo::Variable {
+        name: "localVar".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(var_local).unwrap();
+
+    let (exists, is_local, is_global) = table.symbol_availability("localVar");
+    assert!(exists);
+    assert!(is_local);     // En scope actual
+    assert!(!is_global);
+
+    // Verificar global variable desde local scope
+    let (exists, is_local, is_global) = table.symbol_availability("globalVar");
+    assert!(exists);       // Sigue siendo accesible
+    assert!(!is_local);    // No es local (está en scope anterior)
+    assert!(is_global);    // Es global
+
+    table.exit_scope();
+}
+
+#[test]
+fn test_safe_api_get_type_reference() {
+    // Verifica que get_type_reference() retorna el tipo correcto
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let typed_var = SymbolInfo::Variable {
+        name: "age".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(typed_var).unwrap();
+
+    let untyped_var = SymbolInfo::Variable {
+        name: "value".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(untyped_var).unwrap();
+
+    let type_ref = table.get_type_reference("age");
+    assert!(type_ref.is_some());
+
+    let type_ref = table.get_type_reference("value");
+    assert!(type_ref.is_none());
+
+    let type_ref = table.get_type_reference("undefined");
+    assert!(type_ref.is_none());
+}
+
+#[test]
+fn test_safe_api_exists_in_global() {
+    // Verifica que exists_in_global() solo retorna true para símbolos globales
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let global_var = SymbolInfo::Variable {
+        name: "globalVar".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(global_var).unwrap();
+
+    assert!(table.exists_in_global("globalVar"));
+    assert!(!table.exists_in_global("undefined"));
+
+    table.enter_scope();
+    let local_var = SymbolInfo::Variable {
+        name: "localVar".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(local_var).unwrap();
+
+    assert!(!table.exists_in_global("localVar"));  // Existe pero no globalmente
+    assert!(table.exists_in_global("globalVar"));  // Sigue existiendo globalmente
+
+    table.exit_scope();
+}
+
+#[test]
+fn test_safe_api_exists_only_locally() {
+    // Verifica que exists_only_locally() retorna true solo para símbolos locales
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let global_var = SymbolInfo::Variable {
+        name: "globalVar".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(global_var).unwrap();
+
+    assert!(!table.exists_only_locally("globalVar"));  // Es global, no solo local
+
+    table.enter_scope();
+
+    let local_var = SymbolInfo::Variable {
+        name: "localVar".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(local_var).unwrap();
+
+    assert!(table.exists_only_locally("localVar"));     // Es solo local
+    assert!(!table.exists_only_locally("globalVar"));   // Es global, no solo local
+
+    table.exit_scope();
+
+    assert!(!table.exists_only_locally("localVar"));    // Ya no existe
+    assert!(!table.exists_only_locally("globalVar"));   // Es global
+}
+
+#[test]
+fn test_safe_api_global_types_and_protocols() {
+    // Verifica que global_types() y global_protocols() funcionan correctamente
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let type1 = SymbolInfo::Type {
+        name: "Point".to_string(),
+        span: span.clone(),
+    };
+    let type2 = SymbolInfo::Type {
+        name: "Vector".to_string(),
+        span: span.clone(),
+    };
+    let proto = SymbolInfo::Protocol {
+        name: "Drawable".to_string(),
+        span: span.clone(),
+    };
+
+    table.declare(type1).unwrap();
+    table.declare(type2).unwrap();
+    table.declare(proto).unwrap();
+
+    let types = table.global_types();
+    assert_eq!(types.len(), 2);
+    let type_names: Vec<&str> = types.iter().map(|t| t.name()).collect();
+    assert!(type_names.contains(&"Point"));
+    assert!(type_names.contains(&"Vector"));
+
+    let protos = table.global_protocols();
+    assert_eq!(protos.len(), 1);
+    assert_eq!(protos[0].name(), "Drawable");
+}
+
+#[test]
+fn test_safe_api_variables_and_parameters_in_scope() {
+    // Verifica que variables_in_scope() y parameters_in_scope() funcionan
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    table.enter_scope();
+
+    let var = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    let param = SymbolInfo::Parameter {
+        name: "y".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+
+    table.declare(var).unwrap();
+    table.declare(param).unwrap();
+
+    let vars = table.variables_in_scope();
+    assert_eq!(vars.len(), 1);
+    assert_eq!(vars[0].name(), "x");
+
+    let params = table.parameters_in_scope();
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].name(), "y");
+
+    table.exit_scope();
+}

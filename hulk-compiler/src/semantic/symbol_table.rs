@@ -234,6 +234,165 @@ impl SymbolTable {
             .unwrap_or_default()
     }
 
+    // ========== SAFE PUBLIC API FOR OTHER MODULES ==========
+    // Estos métodos forman la interfaz segura para que otros módulos
+    // (expression_checker, analyzer) consulten la tabla de símbolos
+
+    /// Verifica si un símbolo es una función
+    pub fn is_function(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Function { .. }))
+    }
+
+    /// Verifica si un símbolo es una variable
+    pub fn is_variable(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Variable { .. }))
+    }
+
+    /// Verifica si un símbolo es un parámetro
+    pub fn is_parameter(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Parameter { .. }))
+    }
+
+    /// Verifica si un símbolo es un tipo
+    pub fn is_type(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Type { .. }))
+    }
+
+    /// Verifica si un símbolo es un protocolo
+    pub fn is_protocol(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Protocol { .. }))
+    }
+
+    /// Retorna el nombre del tipo de símbolo ("function", "variable", "type", etc.)
+    pub fn get_symbol_kind(&self, name: &str) -> Option<&'static str> {
+        match self.lookup(name) {
+            Some(SymbolInfo::Function { .. }) => Some("function"),
+            Some(SymbolInfo::Variable { .. }) => Some("variable"),
+            Some(SymbolInfo::Parameter { .. }) => Some("parameter"),
+            Some(SymbolInfo::Type { .. }) => Some("type"),
+            Some(SymbolInfo::Protocol { .. }) => Some("protocol"),
+            None => None,
+        }
+    }
+
+    /// Retorna todas las funciones declaradas en el scope actual
+    pub fn functions_in_scope(&self) -> Vec<SymbolInfo> {
+        self.symbols_in_current_scope()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Function { .. }))
+            .collect()
+    }
+
+    /// Retorna todas las variables en el scope actual
+    pub fn variables_in_scope(&self) -> Vec<SymbolInfo> {
+        self.symbols_in_current_scope()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Variable { .. }))
+            .collect()
+    }
+
+    /// Retorna todos los parámetros en el scope actual
+    pub fn parameters_in_scope(&self) -> Vec<SymbolInfo> {
+        self.symbols_in_current_scope()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Parameter { .. }))
+            .collect()
+    }
+
+    /// Retorna todas las funciones globales (útil para buscar funciones disponibles)
+    pub fn global_functions(&self) -> Vec<SymbolInfo> {
+        self.global_symbols()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Function { .. }))
+            .collect()
+    }
+
+    /// Retorna todos los tipos globales
+    pub fn global_types(&self) -> Vec<SymbolInfo> {
+        self.global_symbols()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Type { .. }))
+            .collect()
+    }
+
+    /// Retorna todos los protocolos globales
+    pub fn global_protocols(&self) -> Vec<SymbolInfo> {
+        self.global_symbols()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Protocol { .. }))
+            .collect()
+    }
+
+    /// Cuenta cuántos símbolos hay en el scope actual
+    pub fn symbol_count_in_scope(&self) -> usize {
+        self.symbols_in_current_scope().len()
+    }
+
+    /// Cuenta cuántos símbolos hay en total (todos los scopes)
+    pub fn total_symbol_count(&self) -> usize {
+        self.all_symbols_in_chain().len()
+    }
+
+    /// Cuenta cuántos símbolos hay en global scope
+    pub fn global_symbol_count(&self) -> usize {
+        self.global_symbols().len()
+    }
+
+    /// Resuelve un símbolo de forma segura, retornando información completa
+    /// Útil para el analyzer cuando quiere saber todo sobre un símbolo
+    pub fn resolve_symbol_info(&self, name: &str) -> Option<(SymbolInfo, usize, &'static str)> {
+        self.lookup(name).map(|sym| {
+            let kind = match &sym {
+                SymbolInfo::Function { .. } => "function",
+                SymbolInfo::Variable { .. } => "variable",
+                SymbolInfo::Parameter { .. } => "parameter",
+                SymbolInfo::Type { .. } => "type",
+                SymbolInfo::Protocol { .. } => "protocol",
+            };
+            
+            // Encontrar en qué scope está
+            for (scope_idx, scope) in self.scopes.iter().enumerate().rev() {
+                if scope.contains_key(name) {
+                    return (sym, scope_idx, kind);
+                }
+            }
+            
+            (sym, 0, kind)  // Si no lo encuentra (no debería pasar), retorna scope 0
+        })
+    }
+
+    /// Verifica si un símbolo está disponible (existe y es accesible)
+    /// Retorna (existe, es_local, es_global)
+    pub fn symbol_availability(&self, name: &str) -> (bool, bool, bool) {
+        let exists = self.is_symbol_declared(name);
+        let is_local = self.lookup_local(name).is_some();
+        let is_global = self.scopes.first().map_or(false, |g| g.contains_key(name));
+        
+        (exists, is_local, is_global)
+    }
+
+    /// Obtiene la información de tipo de un símbolo (si la tiene)
+    pub fn get_type_reference(&self, name: &str) -> Option<TypeReference> {
+        self.lookup(name).and_then(|sym| {
+            match sym {
+                SymbolInfo::Variable { type_ref, .. } => type_ref,
+                SymbolInfo::Parameter { type_ref, .. } => type_ref,
+                SymbolInfo::Function { return_type, .. } => return_type,
+                _ => None,
+            }
+        })
+    }
+
+    /// Verifica si el símbolo existe en el scope global específicamente
+    pub fn exists_in_global(&self, name: &str) -> bool {
+        self.scopes.first().map_or(false, |g| g.contains_key(name))
+    }
+
+    /// Verifica si el símbolo existe SOLO en scopes locales (no en global)
+    pub fn exists_only_locally(&self, name: &str) -> bool {
+        self.is_symbol_declared(name) && !self.exists_in_global(name)
+    }
+
     /// Declara los símbolos builtin globales (print, sqrt, sin, cos, log, exp, rand)
   
     pub fn declare_builtins(&mut self) {

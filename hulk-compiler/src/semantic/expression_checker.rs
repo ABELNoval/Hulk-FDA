@@ -346,6 +346,33 @@ impl ExpressionChecker {
         Ok(ExpressionType::value(resulting_type))
     }
 
+    /// Verifica tipo de una expresión de asignación
+    ///
+    /// - Verifica que el target sea un lvalue válido (asignable)
+    /// - Evalúa la compatibilidad de tipo entre el target y el value
+    pub fn check_assignment_expression(
+        &self,
+        target_type: &ExpressionType,
+        value_type: &NormalizedType,
+        _span: &Span,
+    ) -> SemanticResult<ExpressionType> {
+        if !target_type.is_lvalue {
+            return Err(SemanticError::AssignmentToImmutable {
+                name: "expresión no asignable (no es un lvalue)".to_string(),
+            });
+        }
+
+        if target_type.type_ != *value_type && target_type.type_ != NormalizedType::Unknown && *value_type != NormalizedType::Unknown {
+            return Err(SemanticError::TypeMismatch {
+                expected: target_type.type_.to_string(),
+                found: value_type.to_string(),
+                context: "asignación".to_string(),
+            });
+        }
+        
+        Ok(ExpressionType::value(value_type.clone()))
+    }
+
     /// Verifica tipo de constructor (new)
     ///
     /// - El tipo debe estar definido
@@ -593,6 +620,46 @@ mod tests {
         let result = checker.check_let_expression(
             Some(&NormalizedType::Number),
             Some(&NormalizedType::String),
+            &Span::default()
+        );
+        assert!(matches!(result, Err(SemanticError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn test_assignment_valid() {
+        let checker = ExpressionChecker::new();
+        // x = 5; (where x is a number lvalue)
+        let target = ExpressionType::lvalue(NormalizedType::Number);
+        let result = checker.check_assignment_expression(
+            &target,
+            &NormalizedType::Number,
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Number);
+        assert!(!result.is_lvalue); // The result of the assignment expression is not an lvalue
+    }
+
+    #[test]
+    fn test_assignment_invalid_lvalue() {
+        let checker = ExpressionChecker::new();
+        // 5 = 10; (where 5 is a value, not an lvalue)
+        let target = ExpressionType::value(NormalizedType::Number);
+        let result = checker.check_assignment_expression(
+            &target,
+            &NormalizedType::Number,
+            &Span::default()
+        );
+        assert!(matches!(result, Err(SemanticError::AssignmentToImmutable { .. })));
+    }
+
+    #[test]
+    fn test_assignment_type_mismatch() {
+        let checker = ExpressionChecker::new();
+        // x = "hello"; (where x is a number lvalue)
+        let target = ExpressionType::lvalue(NormalizedType::Number);
+        let result = checker.check_assignment_expression(
+            &target,
+            &NormalizedType::String,
             &Span::default()
         );
         assert!(matches!(result, Err(SemanticError::TypeMismatch { .. })));

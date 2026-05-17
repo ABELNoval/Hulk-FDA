@@ -276,8 +276,13 @@ impl ExpressionChecker {
     /// Verifica tipo de un bloque de expresiones
     ///
     /// El tipo es el tipo de la última expresión
-    pub fn check_block(&self, last_expr_type: &NormalizedType) -> SemanticResult<ExpressionType> {
-        Ok(ExpressionType::value(last_expr_type.clone()))
+    pub fn check_block(&self, expr_types: &[NormalizedType]) -> SemanticResult<ExpressionType> {
+        if let Some(last_expr_type) = expr_types.last() {
+            Ok(ExpressionType::value(last_expr_type.clone()))
+        } else {
+            // Si el bloque está vacío, asume Unknown o void equivalente.
+            Ok(ExpressionType::value(NormalizedType::Unknown))
+        }
     }
 
     /// Verifica tipo de una expresión while
@@ -509,5 +514,27 @@ mod tests {
             &Span::default()
         ).unwrap();
         assert_eq!(result.type_, NormalizedType::Number);
+    }
+
+    #[test]
+    fn test_block_valid_elements() {
+        let checker = ExpressionChecker::new();
+        let elements = vec![
+            NormalizedType::Number,
+            NormalizedType::String,
+            NormalizedType::Boolean
+        ];
+        let result = checker.check_block(&elements).unwrap();
+        // The block should return the type of the last element
+        assert_eq!(result.type_, NormalizedType::Boolean);
+    }
+
+    #[test]
+    fn test_block_empty() {
+        let checker = ExpressionChecker::new();
+        let elements = vec![];
+        let result = checker.check_block(&elements).unwrap();
+        // Un bloque vacío asume tipo Unknown
+        assert_eq!(result.type_, NormalizedType::Unknown);
     }
 }

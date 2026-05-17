@@ -526,6 +526,72 @@ impl ExpressionChecker {
         // TODO: Validar que el cast es válido (upcast o downcast permitido)
         Ok(ExpressionType::value(target_type.clone()))
     }
+
+    /// Verifica acceso a índice de vector
+    pub fn check_index_access(
+        &self,
+        object_type: &NormalizedType,
+        index_type: &NormalizedType,
+        _span: &Span,
+    ) -> SemanticResult<ExpressionType> {
+        if *index_type != NormalizedType::Number && *index_type != NormalizedType::Unknown {
+            return Err(SemanticError::InvalidIndexType {
+                expected: "Number".to_string(),
+                found: index_type.to_string(),
+            });
+        }
+
+        match object_type {
+            NormalizedType::Vector(inner) => {
+                // Return an LValue so that you can do x[0] = 5
+                Ok(ExpressionType::lvalue((**inner).clone()))
+            }
+            NormalizedType::Unknown => Ok(ExpressionType::lvalue(NormalizedType::Unknown)),
+            _ => Err(SemanticError::NotIndexable {
+                type_name: object_type.to_string(),
+            }),
+        }
+    }
+
+    /// Verifica vector literal (e.g. [1, 2, 3])
+    pub fn check_vector_literal(
+        &self,
+        element_types: &[NormalizedType],
+        _span: &Span,
+    ) -> SemanticResult<ExpressionType> {
+        if element_types.is_empty() {
+            return Ok(ExpressionType::value(NormalizedType::Vector(Box::new(
+                NormalizedType::Unknown,
+            ))));
+        }
+
+        let first_type = &element_types[0];
+        for (i, element_type) in element_types.iter().enumerate().skip(1) {
+            if element_type != first_type && *element_type != NormalizedType::Unknown && *first_type != NormalizedType::Unknown {
+                return Err(SemanticError::InconsistentArrayTypes {
+                    expected: first_type.to_string(),
+                    found: element_type.to_string(),
+                    position: i,
+                });
+            }
+        }
+
+        Ok(ExpressionType::value(NormalizedType::Vector(Box::new(
+            first_type.clone(),
+        ))))
+    }
+
+    /// Verifica uso de enumeraciones (comprensión o iterador explícito)
+    pub fn check_iterable_usage(
+        &self,
+        element_expr_type: &NormalizedType,
+        _iterable_type: &NormalizedType,
+        _span: &Span,
+    ) -> SemanticResult<ExpressionType> {
+        Ok(ExpressionType::value(NormalizedType::Iterable(Box::new(
+            element_expr_type.clone(),
+        ))))
+    }
 }
 
 impl Default for ExpressionChecker {
@@ -909,5 +975,52 @@ mod tests {
             &Span::default()
         ).unwrap();
         assert_eq!(result.type_, NormalizedType::Named("Object".to_string()));
+    }
+
+    #[test]
+    fn test_index_access_valid() {
+        let checker = ExpressionChecker::new();
+        let vec_type = NormalizedType::Vector(Box::new(NormalizedType::Number));
+        let result = checker.check_index_access(&vec_type, &NormalizedType::Number, &Span::default()).unwrap();
+        assert_eq!(result.type_, NormalizedType::Number);
+        assert!(result.is_lvalue);
+    }
+
+    #[test]
+    fn test_index_access_invalid_target() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_index_access(&NormalizedType::Number, &NormalizedType::Number, &Span::default());
+        assert!(matches!(result.unwrap_err(), SemanticError::NotIndexable { .. }));
+    }
+
+    #[test]
+    fn test_index_access_invalid_index() {
+        let checker = ExpressionChecker::new();
+        let vec_type = NormalizedType::Vector(Box::new(NormalizedType::Number));
+        let result = checker.check_index_access(&vec_type, &NormalizedType::String, &Span::default());
+        assert!(matches!(result.unwrap_err(), SemanticError::InvalidIndexType { .. }));
+    }
+
+    #[test]
+    fn test_vector_literal_valid() {
+        let checker = ExpressionChecker::new();
+        let types = vec![NormalizedType::Number, NormalizedType::Number];
+        let result = checker.check_vector_literal(&types, &Span::default()).unwrap();
+        assert_eq!(result.type_, NormalizedType::Vector(Box::new(NormalizedType::Number)));
+    }
+
+    #[test]
+    fn test_vector_literal_inconsistent() {
+        let checker = ExpressionChecker::new();
+        let types = vec![NormalizedType::Number, NormalizedType::String];
+        let result = checker.check_vector_literal(&types, &Span::default());
+        assert!(matches!(result.unwrap_err(), SemanticError::InconsistentArrayTypes { .. }));
+    }
+
+    #[test]
+    fn test_iterable_usage() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_iterable_usage(&NormalizedType::Number, &NormalizedType::Iterable(Box::new(NormalizedType::Number)), &Span::default()).unwrap();
+        assert_eq!(result.type_, NormalizedType::Iterable(Box::new(NormalizedType::Number)));
     }
 }

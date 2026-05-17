@@ -14,6 +14,7 @@
 
 use crate::parser::ast::{Parameter, TypeReference};
 use crate::utils::errors::span::Span;
+use crate::utils::errors::semantic::SemanticError;
 use std::collections::HashMap;
 
 /// Información sobre un símbolo en la tabla
@@ -110,11 +111,41 @@ impl SymbolTable {
         self.scopes.len()
     }
 
-    pub fn declare(&mut self, symbol: SymbolInfo) -> Result<(), String> {
+    pub fn declare(&mut self, symbol: SymbolInfo) -> Result<(), SemanticError> {
         let scope = self.scopes.last_mut().expect("At least global scope exists");
 
-        if scope.contains_key(symbol.name()) {
-            return Err(format!("Symbol '{}' already declared in this scope", symbol.name()));
+        if let Some(existing) = scope.get(symbol.name()) {
+            // Retornar error específico basado en el tipo de símbolo
+            match &symbol {
+                SymbolInfo::Function { name, .. } => {
+                    return Err(SemanticError::FunctionAlreadyDeclared {
+                        name: name.clone(),
+                        first_line: existing.span().start_line,
+                        first_column: existing.span().start_column,
+                    });
+                }
+                SymbolInfo::Type { name, .. } => {
+                    return Err(SemanticError::TypeAlreadyDeclared {
+                        name: name.clone(),
+                        first_line: existing.span().start_line,
+                        first_column: existing.span().start_column,
+                    });
+                }
+                SymbolInfo::Variable { name, .. } | SymbolInfo::Parameter { name, .. } => {
+                    return Err(SemanticError::VariableAlreadyDeclared {
+                        name: name.clone(),
+                        first_line: existing.span().start_line,
+                        first_column: existing.span().start_column,
+                    });
+                }
+                SymbolInfo::Protocol { name, .. } => {
+                    return Err(SemanticError::TypeAlreadyDeclared {
+                        name: name.clone(),
+                        first_line: existing.span().start_line,
+                        first_column: existing.span().start_column,
+                    });
+                }
+            }
         }
 
         scope.insert(symbol.name().to_string(), symbol);
@@ -156,10 +187,28 @@ impl SymbolTable {
         self.scope_depth() == 1
     }
 
-    /// Retorna el símbolo o un error descriptivo
+    /// Retorna el símbolo o un error descriptivo (usando String)
     pub fn get_symbol(&self, name: &str) -> Result<SymbolInfo, String> {
         self.lookup(name)
             .ok_or_else(|| format!("Symbol '{}' is not declared", name))
+    }
+
+    /// Retorna el símbolo o un SemanticError si no está declarado
+    /// Determina automáticamente qué tipo de error basado en convenciones de nombres
+    pub fn get_symbol_or_error(&self, name: &str) -> Result<SymbolInfo, SemanticError> {
+        self.lookup(name).ok_or_else(|| {
+            // Heurística: si empieza con mayúscula, probablemente sea un tipo/protocolo
+            if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                SemanticError::UndeclaredType {
+                    name: name.to_string(),
+                }
+            } else {
+                // Si empieza con minúscula, probablemente sea una variable/función
+                SemanticError::UndeclaredVariable {
+                    name: name.to_string(),
+                }
+            }
+        })
     }
 
     /// Lista todos los símbolos desde el scope actual hacia el global (para debugging)

@@ -5,6 +5,7 @@
 use super::symbol_table::*;
 use crate::parser::ast::TypeReference;
 use crate::utils::errors::span::Span;
+use crate::utils::errors::semantic::SemanticError;
 
 #[test]
 fn test_symbol_table_new() {
@@ -256,7 +257,7 @@ fn test_declare_same_name_different_scopes() {
 
 #[test]
 fn test_declare_error_contains_symbol_name() {
-    // Verifica que el mensaje de error contiene el nombre del símbolo
+    // Verifica que el error SemanticError contiene el nombre del símbolo
     let mut table = SymbolTable::new();
     let span = Span::default();
 
@@ -277,9 +278,12 @@ fn test_declare_error_contains_symbol_name() {
     let result = table.declare(var2);
     assert!(result.is_err());
     
-    // Verifica que el error message contiene el nombre
-    if let Err(msg) = result {
-        assert!(msg.contains("duplicate_name"));
+    // Verifica que el error contiene el nombre
+    match result.unwrap_err() {
+        SemanticError::VariableAlreadyDeclared { name, .. } => {
+            assert_eq!(name, "duplicate_name");
+        }
+        _ => panic!("Expected VariableAlreadyDeclared error"),
     }
 }
 
@@ -1244,4 +1248,645 @@ fn test_nested_function_parameter_isolation() {
     assert!(table.lookup("inner").is_none());
     // Pero outer sí es resolvible (está en global)
     assert!(table.lookup("outer").is_some());
+}
+
+// ===== TAREA 6: SUPPORT RESOLUTION OF TOP-LEVEL DECLARATIONS IN GLOBAL SCOPE =====
+
+#[test]
+fn test_top_level_function_resolution_from_global() {
+    // Verifica que funciones declaradas en global scope son resolvibles desde global
+    // Simula: function add(x: Number, y: Number) -> Number { x + y }
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar función en global scope
+    let add_func = SymbolInfo::Function {
+        name: "add".to_string(),
+        parameters: vec![],
+        return_type: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(add_func).unwrap();
+
+    // Verificar que está en global
+    assert!(table.is_global_scope());
+    assert!(table.lookup("add").is_some());
+    assert!(table.lookup_local("add").is_some());
+
+    // Verificar que está en global_symbols()
+    let global_syms = table.global_symbols();
+    assert_eq!(global_syms.len(), 1);
+    assert_eq!(global_syms[0].name(), "add");
+}
+
+#[test]
+fn test_top_level_function_accessible_from_nested_scope() {
+    // Verifica que funciones globales son accesibles desde scopes anidados
+    // Simula: 
+    // function add(x: Number, y: Number) -> Number { x + y }
+    // function multiply(a: Number, b: Number) -> Number { 
+    //   let result = add(a, b) in result  <- add es accesible aquí
+    // }
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar función top-level
+    let add_func = SymbolInfo::Function {
+        name: "add".to_string(),
+        parameters: vec![],
+        return_type: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(add_func).unwrap();
+
+    // Entrar a scope de otra función
+    table.enter_scope();
+    
+    // Desde aquí, add es resolvible (atraviesa scopes)
+    assert!(table.lookup("add").is_some());
+    
+    // Entrar a un let dentro
+    table.enter_scope();
+    assert!(table.lookup("add").is_some());
+    
+    // Entrar a otro nivel
+    table.enter_scope();
+    assert!(table.lookup("add").is_some());
+    
+    table.exit_scope();
+    table.exit_scope();
+    table.exit_scope();
+
+    // En global, sigue siendo resolvible
+    assert!(table.lookup("add").is_some());
+}
+
+#[test]
+fn test_top_level_type_declaration_and_resolution() {
+    // Verifica que tipos declarados en global son resolvibles desde cualquier lugar
+    // Simula: type Point { x: Number, y: Number }
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar tipo top-level
+    let point_type = SymbolInfo::Type {
+        name: "Point".to_string(),
+        span: span.clone(),
+    };
+    table.declare(point_type).unwrap();
+
+    // Resolvible en global
+    assert!(table.lookup("Point").is_some());
+
+    // Entrar a scope local
+    table.enter_scope();
+    assert!(table.lookup("Point").is_some());
+    
+    table.exit_scope();
+
+    // Sigue siendo resolvible
+    assert!(table.lookup("Point").is_some());
+}
+
+#[test]
+fn test_top_level_protocol_declaration_and_resolution() {
+    // Verifica que protocolos declarados en global son resolvibles
+    // Simula: protocol Printable { print(obj: Printable) }
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar protocolo top-level
+    let printable_proto = SymbolInfo::Protocol {
+        name: "Printable".to_string(),
+        span: span.clone(),
+    };
+    table.declare(printable_proto).unwrap();
+
+    // Resolvible en global
+    assert!(table.lookup("Printable").is_some());
+
+    // Entrar a scope local
+    table.enter_scope();
+    assert!(table.lookup("Printable").is_some());
+    
+    // En local también
+    let var = SymbolInfo::Variable {
+        name: "obj".to_string(),
+        type_ref: Some(TypeReference::new("Printable".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(var).unwrap();
+    assert!(table.lookup("Printable").is_some());
+    
+    table.exit_scope();
+
+    // Sigue siendo resolvible
+    assert!(table.lookup("Printable").is_some());
+}
+
+#[test]
+fn test_multiple_top_level_declarations_coexist() {
+    // Verifica que múltiples declaraciones top-level coexisten sin conflicto
+    // Simula:
+    // function add(x: Number, y: Number) -> Number { x + y }
+    // function subtract(x: Number, y: Number) -> Number { x - y }
+    // type Point { x: Number, y: Number }
+    // protocol Shape { area() -> Number }
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar múltiples funciones
+    let add_func = SymbolInfo::Function {
+        name: "add".to_string(),
+        parameters: vec![],
+        return_type: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(add_func).unwrap();
+
+    let subtract_func = SymbolInfo::Function {
+        name: "subtract".to_string(),
+        parameters: vec![],
+        return_type: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+    table.declare(subtract_func).unwrap();
+
+    // Declarar tipo
+    let point_type = SymbolInfo::Type {
+        name: "Point".to_string(),
+        span: span.clone(),
+    };
+    table.declare(point_type).unwrap();
+
+    // Declarar protocolo
+    let shape_proto = SymbolInfo::Protocol {
+        name: "Shape".to_string(),
+        span: span.clone(),
+    };
+    table.declare(shape_proto).unwrap();
+
+    // Todos son resolvibles
+    assert!(table.lookup("add").is_some());
+    assert!(table.lookup("subtract").is_some());
+    assert!(table.lookup("Point").is_some());
+    assert!(table.lookup("Shape").is_some());
+
+    // global_symbols() contiene todos
+    let global_syms = table.global_symbols();
+    assert_eq!(global_syms.len(), 4);
+
+    // Dentro de un scope local, todos siguen siendo accesibles
+    table.enter_scope();
+    assert!(table.lookup("add").is_some());
+    assert!(table.lookup("subtract").is_some());
+    assert!(table.lookup("Point").is_some());
+    assert!(table.lookup("Shape").is_some());
+    table.exit_scope();
+}
+
+#[test]
+fn test_top_level_duplicate_declaration_error() {
+    // Verifica que no pueda haber duplicados en global scope
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar función
+    let func1 = SymbolInfo::Function {
+        name: "myFunc".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    assert!(table.declare(func1).is_ok());
+
+    // Intentar declarar función duplicada en global
+    let func2 = SymbolInfo::Function {
+        name: "myFunc".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    assert!(table.declare(func2).is_err());
+
+    // Pero en un scope local sí puedo redeclarar (shadowing)
+    table.enter_scope();
+    let func3 = SymbolInfo::Function {
+        name: "myFunc".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    assert!(table.declare(func3).is_ok());
+    table.exit_scope();
+}
+
+#[test]
+fn test_top_level_shadowing_not_allowed_same_scope() {
+    // Verifica que el mismo tipo de símbolo no puede ser declarado dos veces
+    // incluso en global, pero diferentes tipos SÍ pueden coexistir con el mismo nombre
+    // (aunque sea mala práctica)
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar tipo "Point"
+    let point_type = SymbolInfo::Type {
+        name: "Point".to_string(),
+        span: span.clone(),
+    };
+    table.declare(point_type).unwrap();
+
+    // Intentar declarar función con el mismo nombre - error
+    let point_func = SymbolInfo::Function {
+        name: "Point".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    assert!(table.declare(point_func).is_err());
+
+    // lookup("Point") encuentra el tipo
+    assert!(table.lookup("Point").is_some());
+}
+
+#[test]
+fn test_top_level_all_symbols_including_from_parent_scopes() {
+    // Verifica que all_symbols_in_chain() incluye símbolos globales
+    // incluso desde scopes anidados
+    
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar función en global
+    let global_func = SymbolInfo::Function {
+        name: "globalFunc".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    table.declare(global_func).unwrap();
+
+    // Entrar a scope local
+    table.enter_scope();
+
+    // Declarar variable local
+    let local_var = SymbolInfo::Variable {
+        name: "localVar".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    table.declare(local_var).unwrap();
+
+    // all_symbols_in_chain() debe incluir ambos
+    let all_syms = table.all_symbols_in_chain();
+    assert_eq!(all_syms.len(), 2);
+
+    // Verificar que incluye tanto global como local
+    let names: Vec<&str> = all_syms.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert!(names.contains(&"globalFunc"));
+    assert!(names.contains(&"localVar"));
+
+    table.exit_scope();
+
+    // En global, solo la función es visible
+    let global_syms = table.global_symbols();
+    assert_eq!(global_syms.len(), 1);
+    assert_eq!(global_syms[0].name(), "globalFunc");
+}
+
+// ===== TAREA 7: SEMANTIC ERRORS FOR UNDEFINED SYMBOLS AND INVALID REDEFINITIONS =====
+
+#[test]
+fn test_semantic_error_function_already_declared() {
+    // Verifica que declare() retorna SemanticError::FunctionAlreadyDeclared
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let func1 = SymbolInfo::Function {
+        name: "add".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+
+    assert!(table.declare(func1).is_ok());
+
+    let func2 = SymbolInfo::Function {
+        name: "add".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+
+    // Intentar declarar función duplicada
+    let err = table.declare(func2);
+    assert!(err.is_err());
+
+    // Verificar que es el error correcto
+    match err.unwrap_err() {
+        SemanticError::FunctionAlreadyDeclared { name, .. } => {
+            assert_eq!(name, "add");
+        }
+        _ => panic!("Expected FunctionAlreadyDeclared error"),
+    }
+}
+
+#[test]
+fn test_semantic_error_variable_already_declared() {
+    // Verifica que declare() retorna SemanticError::VariableAlreadyDeclared
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let var1 = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+
+    assert!(table.declare(var1).is_ok());
+
+    let var2 = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+
+    let err = table.declare(var2);
+    assert!(err.is_err());
+
+    match err.unwrap_err() {
+        SemanticError::VariableAlreadyDeclared { name, first_line, first_column } => {
+            assert_eq!(name, "x");
+            assert_eq!(first_line, span.start_line);
+            assert_eq!(first_column, span.start_column);
+        }
+        _ => panic!("Expected VariableAlreadyDeclared error"),
+    }
+}
+
+#[test]
+fn test_semantic_error_type_already_declared() {
+    // Verifica que declare() retorna SemanticError::TypeAlreadyDeclared
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    let type1 = SymbolInfo::Type {
+        name: "Point".to_string(),
+        span: span.clone(),
+    };
+
+    assert!(table.declare(type1).is_ok());
+
+    let type2 = SymbolInfo::Type {
+        name: "Point".to_string(),
+        span: span.clone(),
+    };
+
+    let err = table.declare(type2);
+    assert!(err.is_err());
+
+    match err.unwrap_err() {
+        SemanticError::TypeAlreadyDeclared { name, .. } => {
+            assert_eq!(name, "Point");
+        }
+        _ => panic!("Expected TypeAlreadyDeclared error"),
+    }
+}
+
+#[test]
+fn test_semantic_error_parameter_already_declared() {
+    // Verifica que parámetros duplicados retornan VariableAlreadyDeclared
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    table.enter_scope();  // Simular scope de función
+
+    let param1 = SymbolInfo::Parameter {
+        name: "x".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+
+    assert!(table.declare(param1).is_ok());
+
+    let param2 = SymbolInfo::Parameter {
+        name: "x".to_string(),
+        type_ref: Some(TypeReference::new("Number".to_string(), span.clone())),
+        span: span.clone(),
+    };
+
+    let err = table.declare(param2);
+    assert!(err.is_err());
+
+    match err.unwrap_err() {
+        SemanticError::VariableAlreadyDeclared { name, .. } => {
+            assert_eq!(name, "x");
+        }
+        _ => panic!("Expected VariableAlreadyDeclared error for parameter"),
+    }
+
+    table.exit_scope();
+}
+
+#[test]
+fn test_semantic_error_undeclared_variable_lookup() {
+    // Verifica que lookup de variable inexistente retorna None
+    // y que get_symbol_or_error() retorna UndeclaredVariable
+    let table = SymbolTable::new();
+
+    // lookup retorna None
+    assert!(table.lookup("undefined_var").is_none());
+
+    // get_symbol_or_error retorna UndeclaredVariable
+    let err = table.get_symbol_or_error("undefined_var");
+    assert!(err.is_err());
+
+    match err.unwrap_err() {
+        SemanticError::UndeclaredVariable { name } => {
+            assert_eq!(name, "undefined_var");
+        }
+        _ => panic!("Expected UndeclaredVariable error"),
+    }
+}
+
+#[test]
+fn test_semantic_error_undeclared_type_lookup() {
+    // Verifica que lookup de tipo inexistente retorna None
+    // y que get_symbol_or_error() retorna UndeclaredType para nombres con mayúscula
+    let table = SymbolTable::new();
+
+    // lookup retorna None
+    assert!(table.lookup("UndefinedType").is_none());
+
+    // get_symbol_or_error retorna UndeclaredType (heurística: mayúscula inicial)
+    let err = table.get_symbol_or_error("UndefinedType");
+    assert!(err.is_err());
+
+    match err.unwrap_err() {
+        SemanticError::UndeclaredType { name } => {
+            assert_eq!(name, "UndefinedType");
+        }
+        _ => panic!("Expected UndeclaredType error"),
+    }
+}
+
+#[test]
+fn test_semantic_error_redeclaration_in_different_scope_allowed() {
+    // Verifica que la redeclaración en DIFERENTE scope es permitida (shadowing)
+    // pero en el MISMO scope no
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar variable en global
+    let var1 = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    assert!(table.declare(var1).is_ok());
+
+    // Intentar redeclarar en mismo scope - ERROR
+    let var2 = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    assert!(table.declare(var2).is_err());
+
+    // Entrar a scope local
+    table.enter_scope();
+
+    // Redeclarar en scope diferente - OK (shadowing)
+    let var3 = SymbolInfo::Variable {
+        name: "x".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    assert!(table.declare(var3).is_ok());
+
+    // lookup encuentra la variable del scope actual (shadowing)
+    let sym = table.lookup("x").unwrap();
+    assert_eq!(sym.name(), "x");
+
+    table.exit_scope();
+
+    // Fuera del scope, lookup encuentra la variable global
+    let sym = table.lookup("x").unwrap();
+    assert_eq!(sym.name(), "x");
+}
+
+#[test]
+fn test_semantic_error_mixed_symbol_types_same_name() {
+    // Verifica que no se pueden declarar símbolos de diferente tipo con el mismo nombre
+    let mut table = SymbolTable::new();
+    let span = Span::default();
+
+    // Declarar función "calculate"
+    let func = SymbolInfo::Function {
+        name: "calculate".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span.clone(),
+    };
+    assert!(table.declare(func).is_ok());
+
+    // Intentar declarar variable "calculate" - ERROR
+    let var = SymbolInfo::Variable {
+        name: "calculate".to_string(),
+        type_ref: None,
+        span: span.clone(),
+    };
+    assert!(table.declare(var).is_err());
+
+    // Intentar declarar tipo "calculate" - ERROR
+    let typ = SymbolInfo::Type {
+        name: "calculate".to_string(),
+        span: span.clone(),
+    };
+    assert!(table.declare(typ).is_err());
+}
+
+#[test]
+fn test_semantic_error_tracks_first_declaration_location() {
+    // Verifica que el error reporta la ubicación de la primera declaración
+    let mut table = SymbolTable::new();
+    let span1 = Span {
+        start_line: 10,
+        start_column: 5,
+        ..Default::default()
+    };
+    let span2 = Span {
+        start_line: 15,
+        start_column: 8,
+        ..Default::default()
+    };
+
+    let func1 = SymbolInfo::Function {
+        name: "myFunc".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span1.clone(),
+    };
+    table.declare(func1).unwrap();
+
+    let func2 = SymbolInfo::Function {
+        name: "myFunc".to_string(),
+        parameters: vec![],
+        return_type: None,
+        span: span2.clone(),
+    };
+
+    let err = table.declare(func2);
+    match err.unwrap_err() {
+        SemanticError::FunctionAlreadyDeclared {
+            name,
+            first_line,
+            first_column,
+        } => {
+            assert_eq!(name, "myFunc");
+            assert_eq!(first_line, 10);  // Ubicación de PRIMERA declaración
+            assert_eq!(first_column, 5);
+        }
+        _ => panic!("Expected FunctionAlreadyDeclared error"),
+    }
+}
+
+#[test]
+fn test_semantic_error_heuristic_lowercase_vs_uppercase() {
+    // Verifica la heurística de get_symbol_or_error() para distinguir tipos de símbolos
+    let table = SymbolTable::new();
+
+    // Nombre con minúscula -> UndeclaredVariable
+    let err1 = table.get_symbol_or_error("myVariable");
+    match err1.unwrap_err() {
+        SemanticError::UndeclaredVariable { name } => {
+            assert_eq!(name, "myVariable");
+        }
+        _ => panic!("Expected UndeclaredVariable for lowercase name"),
+    }
+
+    // Nombre con mayúscula -> UndeclaredType
+    let err2 = table.get_symbol_or_error("MyType");
+    match err2.unwrap_err() {
+        SemanticError::UndeclaredType { name } => {
+            assert_eq!(name, "MyType");
+        }
+        _ => panic!("Expected UndeclaredType for uppercase name"),
+    }
+
+    // Número al inicio -> UndeclaredVariable (no es mayúscula)
+    let err3 = table.get_symbol_or_error("123invalid");
+    match err3.unwrap_err() {
+        SemanticError::UndeclaredVariable { name } => {
+            assert_eq!(name, "123invalid");
+        }
+        _ => panic!("Expected UndeclaredVariable for digit-start name"),
+    }
 }

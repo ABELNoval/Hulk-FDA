@@ -318,6 +318,34 @@ impl ExpressionChecker {
         Ok(ExpressionType::value(body_type.clone()))
     }
 
+    /// Verifica tipo de una expresión let (declaración de variable)
+    ///
+    /// - Evalúa la relación entre la anotación explícita y el tipo del valor inferido
+    pub fn check_let_expression(
+        &self,
+        annotation_type: Option<&NormalizedType>,
+        value_type: Option<&NormalizedType>,
+        _span: &Span,
+    ) -> SemanticResult<ExpressionType> {
+        if let (Some(expected), Some(found)) = (annotation_type, value_type) {
+            if expected != found {
+                return Err(SemanticError::TypeMismatch {
+                    expected: expected.to_string(),
+                    found: found.to_string(),
+                    context: "asignación en let".to_string(),
+                });
+            }
+        }
+
+        // El tipo de retorno de let como expresión per se puede ser el tipo declarado o inferido
+        let resulting_type = annotation_type
+            .or(value_type)
+            .cloned()
+            .unwrap_or(NormalizedType::Unknown);
+            
+        Ok(ExpressionType::value(resulting_type))
+    }
+
     /// Verifica tipo de constructor (new)
     ///
     /// - El tipo debe estar definido
@@ -536,5 +564,37 @@ mod tests {
         let result = checker.check_block(&elements).unwrap();
         // Un bloque vacío asume tipo Unknown
         assert_eq!(result.type_, NormalizedType::Unknown);
+    }
+
+    #[test]
+    fn test_let_expression_valid() {
+        let checker = ExpressionChecker::new();
+        // let x: Number = 5;
+        let result = checker.check_let_expression(
+            Some(&NormalizedType::Number),
+            Some(&NormalizedType::Number),
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Number);
+        
+        // let inferred = 5;
+        let result = checker.check_let_expression(
+            None,
+            Some(&NormalizedType::Number),
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Number);
+    }
+
+    #[test]
+    fn test_let_expression_type_mismatch() {
+        let checker = ExpressionChecker::new();
+        // let x: Number = "hello";
+        let result = checker.check_let_expression(
+            Some(&NormalizedType::Number),
+            Some(&NormalizedType::String),
+            &Span::default()
+        );
+        assert!(matches!(result, Err(SemanticError::TypeMismatch { .. })));
     }
 }

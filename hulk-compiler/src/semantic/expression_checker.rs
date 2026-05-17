@@ -202,25 +202,98 @@ impl ExpressionChecker {
         &self,
         function_name: &str,
         argument_types: &[NormalizedType],
-        expected_param_count: usize,
+        expected_params: Option<&[(String, NormalizedType)]>,
+        expected_return_type: Option<&NormalizedType>,
         _span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        // TODO: Implementar type checking de llamadas a función
-        // - Validar número de argumentos
-        // - Validar tipos de argumentos
-        // - Retornar tipo de retorno (deducir del contexto si es necesario)
-
-        if argument_types.len() != expected_param_count {
-            return Err(SemanticError::WrongArgumentCount {
-                function: function_name.to_string(),
-                expected: expected_param_count,
-                found: argument_types.len(),
-            });
+        // Built-in functions
+        match function_name {
+            "print" => {
+                if argument_types.len() != 1 {
+                    return Err(SemanticError::WrongArgumentCount {
+                        function: function_name.to_string(),
+                        expected: 1,
+                        found: argument_types.len(),
+                    });
+                }
+                // El print asume devolver el mismo tipo del argumento o Unknown
+                return Ok(ExpressionType::value(argument_types[0].clone()));
+            }
+            "sqrt" | "sin" | "cos" | "exp" => {
+                if argument_types.len() != 1 {
+                    return Err(SemanticError::WrongArgumentCount {
+                        function: function_name.to_string(),
+                        expected: 1,
+                        found: argument_types.len(),
+                    });
+                }
+                if argument_types[0] != NormalizedType::Number && argument_types[0] != NormalizedType::Unknown {
+                    return Err(SemanticError::ArgumentTypeMismatch {
+                        function: function_name.to_string(),
+                        parameter_name: "value".to_string(),
+                        parameter_position: 0,
+                        expected: NormalizedType::Number.to_string(),
+                        found: argument_types[0].to_string(),
+                    });
+                }
+                return Ok(ExpressionType::value(NormalizedType::Number));
+            }
+            "log" => {
+                if argument_types.len() != 2 {
+                    return Err(SemanticError::WrongArgumentCount {
+                        function: function_name.to_string(),
+                        expected: 2,
+                        found: argument_types.len(),
+                    });
+                }
+                if argument_types[0] != NormalizedType::Number && argument_types[0] != NormalizedType::Unknown {
+                    return Err(SemanticError::ArgumentTypeMismatch {
+                        function: function_name.to_string(),
+                        parameter_name: "base".to_string(),
+                        parameter_position: 0,
+                        expected: NormalizedType::Number.to_string(),
+                        found: argument_types[0].to_string(),
+                    });
+                }
+                if argument_types[1] != NormalizedType::Number && argument_types[1] != NormalizedType::Unknown {
+                    return Err(SemanticError::ArgumentTypeMismatch {
+                        function: function_name.to_string(),
+                        parameter_name: "value".to_string(),
+                        parameter_position: 1,
+                        expected: NormalizedType::Number.to_string(),
+                        found: argument_types[1].to_string(),
+                    });
+                }
+                return Ok(ExpressionType::value(NormalizedType::Number));
+            }
+            _ => {}
         }
 
-        // TODO: Validar tipos de argumentos contra parámetros declarados
-        // Por ahora retorna Unknown
-        Ok(ExpressionType::value(NormalizedType::Unknown))
+        // Custom functions
+        if let Some(params) = expected_params {
+            if argument_types.len() != params.len() {
+                return Err(SemanticError::WrongArgumentCount {
+                    function: function_name.to_string(),
+                    expected: params.len(),
+                    found: argument_types.len(),
+                });
+            }
+
+            for (i, (arg_type, (param_name, param_type))) in argument_types.iter().zip(params.iter()).enumerate() {
+                if arg_type != param_type && arg_type != &NormalizedType::Unknown && param_type != &NormalizedType::Unknown {
+                    return Err(SemanticError::ArgumentTypeMismatch {
+                        function: function_name.to_string(),
+                        parameter_name: param_name.to_string(),
+                        parameter_position: i,
+                        expected: param_type.to_string(),
+                        found: arg_type.to_string(),
+                    });
+                }
+            }
+        }
+
+        let ret_type = expected_return_type.cloned().unwrap_or(NormalizedType::Unknown);
+        Ok(ExpressionType::value(ret_type))
     }
 
     /// Verifica tipo de una expresión condicional (if)
@@ -663,5 +736,75 @@ mod tests {
             &Span::default()
         );
         assert!(matches!(result, Err(SemanticError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn test_function_call_builtin_print() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_function_call(
+            "print",
+            &[NormalizedType::String],
+            None,
+            None,
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::String);
+    }
+
+    #[test]
+    fn test_function_call_builtin_math() {
+        let checker = ExpressionChecker::new();
+        
+        // sin(Number) -> Number
+        let result = checker.check_function_call(
+            "sin",
+            &[NormalizedType::Number],
+            None,
+            None,
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Number);
+        
+        // log(Number, Number) -> Number
+        let result = checker.check_function_call(
+            "log",
+            &[NormalizedType::Number, NormalizedType::Number],
+            None,
+            None,
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Number);
+    }
+
+    #[test]
+    fn test_function_call_builtin_invalid() {
+        let checker = ExpressionChecker::new();
+        // sin(String)
+        let result = checker.check_function_call(
+            "sin",
+            &[NormalizedType::String],
+            None,
+            None,
+            &Span::default()
+        );
+        assert!(matches!(result, Err(SemanticError::ArgumentTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn test_function_call_custom_valid() {
+        let checker = ExpressionChecker::new();
+        let expected_params = vec![
+            ("x".to_string(), NormalizedType::Number),
+            ("y".to_string(), NormalizedType::String)
+        ];
+        
+        let result = checker.check_function_call(
+            "my_func",
+            &[NormalizedType::Number, NormalizedType::String],
+            Some(&expected_params),
+            Some(&NormalizedType::Boolean),
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Boolean);
     }
 }

@@ -186,6 +186,13 @@ impl ExpressionChecker {
         }
     }
 
+    /// Verifica tipo de una expresión agrupada (parentesis)
+    /// 
+    /// Simplemente retorna el mismo tipo de la expresión interna
+    pub fn check_grouping(&self, inner_type: &NormalizedType) -> SemanticResult<ExpressionType> {
+        Ok(ExpressionType::value(inner_type.clone()))
+    }
+
     /// Verifica tipo de una llamada a función
     ///
     /// - Valida número de argumentos
@@ -218,20 +225,17 @@ impl ExpressionChecker {
 
     /// Verifica tipo de una expresión condicional (if)
     ///
-    /// - Condición debe ser Boolean
-    /// - Rama then y else deben tener el mismo tipo (o compatible)
+    /// - Condición debe ser Boolean (aplicable también a los elif)
+    /// - Rama then, elifs y else deben tener el mismo tipo (o compatible)
     pub fn check_if_expression(
         &self,
         condition_type: &NormalizedType,
         then_type: &NormalizedType,
+        elif_branches: &[(NormalizedType, NormalizedType)],
         else_type: Option<&NormalizedType>,
         _span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        // TODO: Implementar type checking de if
-        // - Validar condition es Boolean
-        // - Validar ramas tienen tipos compatibles
-        // - Si no hay else, asumir () o error
-
+        // Validar condition es Boolean
         if condition_type != &NormalizedType::Boolean {
             return Err(SemanticError::NonBooleanCondition {
                 found_type: condition_type.to_string(),
@@ -239,6 +243,24 @@ impl ExpressionChecker {
             });
         }
 
+        // Validar elif branches
+        for (elif_cond_type, elif_body_type) in elif_branches {
+            if elif_cond_type != &NormalizedType::Boolean {
+                return Err(SemanticError::NonBooleanCondition {
+                    found_type: elif_cond_type.to_string(),
+                    context: "elif".to_string(),
+                });
+            }
+
+            if then_type != elif_body_type {
+                return Err(SemanticError::IncompatibleBranchTypes {
+                    then_type: then_type.to_string(),
+                    else_type: elif_body_type.to_string(),
+                });
+            }
+        }
+
+        // Validar else branch
         if let Some(else_type) = else_type {
             if then_type != else_type {
                 return Err(SemanticError::IncompatibleBranchTypes {
@@ -256,6 +278,39 @@ impl ExpressionChecker {
     /// El tipo es el tipo de la última expresión
     pub fn check_block(&self, last_expr_type: &NormalizedType) -> SemanticResult<ExpressionType> {
         Ok(ExpressionType::value(last_expr_type.clone()))
+    }
+
+    /// Verifica tipo de una expresión while
+    ///
+    /// - Condición debe ser Boolean
+    pub fn check_while_expression(
+        &self,
+        condition_type: &NormalizedType,
+        body_type: &NormalizedType,
+        _span: &Span,
+    ) -> SemanticResult<ExpressionType> {
+        if condition_type != &NormalizedType::Boolean {
+            return Err(SemanticError::NonBooleanCondition {
+                found_type: condition_type.to_string(),
+                context: "while".to_string(),
+            });
+        }
+        
+        Ok(ExpressionType::value(body_type.clone()))
+    }
+
+    /// Verifica tipo de una expresión for
+    ///
+    /// - Evalúa la parte del iterable 
+    pub fn check_for_expression(
+        &self,
+        _iterable_type: &NormalizedType,
+        body_type: &NormalizedType,
+        _span: &Span,
+    ) -> SemanticResult<ExpressionType> {
+        // TODO: Validar si _iterable_type implementa protocolo Iterable
+        
+        Ok(ExpressionType::value(body_type.clone()))
     }
 
     /// Verifica tipo de constructor (new)
@@ -334,5 +389,125 @@ mod tests {
     #[test]
     fn test_checker_new() {
         let _checker = ExpressionChecker::new();
+    }
+
+    #[test]
+    fn test_if_expression_valid() {
+        let checker = ExpressionChecker::new();
+        // if (Boolean) { Number } elif (Boolean) { Number } else { Number }
+        let elif_branches = vec![
+            (NormalizedType::Boolean, NormalizedType::Number),
+            (NormalizedType::Boolean, NormalizedType::Number)
+        ];
+        let result = checker.check_if_expression(
+            &NormalizedType::Boolean,
+            &NormalizedType::Number,
+            &elif_branches,
+            Some(&NormalizedType::Number),
+            &Span::default()
+        ).unwrap();
+        
+        assert_eq!(result.type_, NormalizedType::Number);
+    }
+
+    #[test]
+    fn test_if_expression_invalid_condition() {
+        let checker = ExpressionChecker::new();
+        // if (Number) { String }
+        let elif_branches = vec![];
+        let result = checker.check_if_expression(
+            &NormalizedType::Number,
+            &NormalizedType::String,
+            &elif_branches,
+            None,
+            &Span::default()
+        );
+        
+        assert!(matches!(result, Err(SemanticError::NonBooleanCondition { .. })));
+    }
+
+    #[test]
+    fn test_if_expression_invalid_elif_condition() {
+        let checker = ExpressionChecker::new();
+        // if (Boolean) { String } elif (Number) { String }
+        let elif_branches = vec![
+            (NormalizedType::Number, NormalizedType::String)
+        ];
+        let result = checker.check_if_expression(
+            &NormalizedType::Boolean,
+            &NormalizedType::String,
+            &elif_branches,
+            None,
+            &Span::default()
+        );
+        
+        assert!(matches!(result, Err(SemanticError::NonBooleanCondition { .. })));
+    }
+
+    #[test]
+    fn test_if_expression_incompatible_elif_branch() {
+        let checker = ExpressionChecker::new();
+        // if (Boolean) { String } elif (Boolean) { Number }
+        let elif_branches = vec![
+            (NormalizedType::Boolean, NormalizedType::Number)
+        ];
+        let result = checker.check_if_expression(
+            &NormalizedType::Boolean,
+            &NormalizedType::String,
+            &elif_branches,
+            None,
+            &Span::default()
+        );
+        
+        assert!(matches!(result, Err(SemanticError::IncompatibleBranchTypes { .. })));
+    }
+
+    #[test]
+    fn test_if_expression_incompatible_else_branch() {
+        let checker = ExpressionChecker::new();
+        // if (Boolean) { String } else { Number }
+        let elif_branches = vec![];
+        let result = checker.check_if_expression(
+            &NormalizedType::Boolean,
+            &NormalizedType::String,
+            &elif_branches,
+            Some(&NormalizedType::Number),
+            &Span::default()
+        );
+        
+        assert!(matches!(result, Err(SemanticError::IncompatibleBranchTypes { .. })));
+    }
+
+    #[test]
+    fn test_while_expression_valid() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_while_expression(
+            &NormalizedType::Boolean,
+            &NormalizedType::Number,
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Number);
+    }
+
+    #[test]
+    fn test_while_expression_invalid_condition() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_while_expression(
+            &NormalizedType::Number,
+            &NormalizedType::String,
+            &Span::default()
+        );
+        assert!(matches!(result, Err(SemanticError::NonBooleanCondition { .. })));
+    }
+
+    #[test]
+    fn test_for_expression_valid() {
+        let checker = ExpressionChecker::new();
+        let result = checker.check_for_expression(
+            &NormalizedType::Unknown,
+            &NormalizedType::Number,
+            &Span::default()
+        ).unwrap();
+        assert_eq!(result.type_, NormalizedType::Number);
     }
 }

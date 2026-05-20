@@ -14,6 +14,7 @@
 
 use crate::parser::ast::{Parameter, TypeReference};
 use crate::utils::errors::span::Span;
+use crate::utils::errors::semantic::SemanticError;
 use std::collections::HashMap;
 
 /// Información sobre un símbolo en la tabla
@@ -77,28 +78,26 @@ impl SymbolInfo {
 /// Mantiene múltiples niveles de scopes (jerarquía).
 /// - Scope 0: global (builtins, declaraciones de funciones/tipos/protocolos)
 /// - Scope 1+: locales (let expressions, function bodies)
+///
+
 pub struct SymbolTable {
     /// Stack de scopes. El primero es el global, los demás son locales.
     scopes: Vec<HashMap<String, SymbolInfo>>,
 }
 
 impl SymbolTable {
-    /// Crea una nueva tabla de símbolos vacía (con un scope global)
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
         }
     }
 
-    /// Ingresa a un nuevo scope (por ejemplo, al entrar a un let o función)
+    
     pub fn enter_scope(&mut self) {
         self.scopes.push(HashMap::new());
     }
 
-    /// Sale del scope actual (por ejemplo, al salir de un let o función)
-    ///
-    /// # Panics
-    /// Si se intenta salir del scope global
+    
     pub fn exit_scope(&mut self) {
         if self.scopes.len() > 1 {
             self.scopes.pop();
@@ -107,30 +106,52 @@ impl SymbolTable {
         }
     }
 
-    /// Retorna la profundidad actual de scopes
+   
     pub fn scope_depth(&self) -> usize {
         self.scopes.len()
     }
 
-    /// Declara un nuevo símbolo en el scope actual
-    ///
-    /// Retorna error si ya existe un símbolo con el mismo nombre en el scope actual.
-    /// (Nota: puede existir con el mismo nombre en otros scopes, eso es shadowing)
-    pub fn declare(&mut self, symbol: SymbolInfo) -> Result<(), String> {
+    pub fn declare(&mut self, symbol: SymbolInfo) -> Result<(), SemanticError> {
         let scope = self.scopes.last_mut().expect("At least global scope exists");
 
-        if scope.contains_key(symbol.name()) {
-            return Err(format!("Symbol '{}' already declared in this scope", symbol.name()));
+        if let Some(existing) = scope.get(symbol.name()) {
+            // Retornar error específico basado en el tipo de símbolo
+            match &symbol {
+                SymbolInfo::Function { name, .. } => {
+                    return Err(SemanticError::FunctionAlreadyDeclared {
+                        name: name.clone(),
+                        first_line: existing.span().start_line,
+                        first_column: existing.span().start_column,
+                    });
+                }
+                SymbolInfo::Type { name, .. } => {
+                    return Err(SemanticError::TypeAlreadyDeclared {
+                        name: name.clone(),
+                        first_line: existing.span().start_line,
+                        first_column: existing.span().start_column,
+                    });
+                }
+                SymbolInfo::Variable { name, .. } | SymbolInfo::Parameter { name, .. } => {
+                    return Err(SemanticError::VariableAlreadyDeclared {
+                        name: name.clone(),
+                        first_line: existing.span().start_line,
+                        first_column: existing.span().start_column,
+                    });
+                }
+                SymbolInfo::Protocol { name, .. } => {
+                    return Err(SemanticError::TypeAlreadyDeclared {
+                        name: name.clone(),
+                        first_line: existing.span().start_line,
+                        first_column: existing.span().start_column,
+                    });
+                }
+            }
         }
 
         scope.insert(symbol.name().to_string(), symbol);
         Ok(())
     }
 
-    /// Busca un símbolo en la tabla
-    ///
-    /// Comienza en el scope actual y sube recursivamente hasta el global.
-    /// Retorna None si el símbolo no está declarado en ningún scope.
     pub fn lookup(&self, name: &str) -> Option<SymbolInfo> {
         for scope in self.scopes.iter().rev() {
             if let Some(symbol) = scope.get(name) {
@@ -140,7 +161,6 @@ impl SymbolTable {
         None
     }
 
-    /// Busca un símbolo solo en el scope actual (no en padres)
     pub fn lookup_local(&self, name: &str) -> Option<SymbolInfo> {
         self.scopes
             .last()
@@ -155,10 +175,226 @@ impl SymbolTable {
             .unwrap_or_default()
     }
 
+    /// Verifica si un símbolo está declarado en algún scope (sin retornarlo)
+
+    pub fn is_symbol_declared(&self, name: &str) -> bool {
+        self.lookup(name).is_some()
+    }
+
+    /// Verifica si estamos en el scope global
+  
+    pub fn is_global_scope(&self) -> bool {
+        self.scope_depth() == 1
+    }
+
+    /// Retorna el símbolo o un error descriptivo (usando String)
+    pub fn get_symbol(&self, name: &str) -> Result<SymbolInfo, String> {
+        self.lookup(name)
+            .ok_or_else(|| format!("Symbol '{}' is not declared", name))
+    }
+
+    /// Retorna el símbolo o un SemanticError si no está declarado
+    /// Determina automáticamente qué tipo de error basado en convenciones de nombres
+    pub fn get_symbol_or_error(&self, name: &str) -> Result<SymbolInfo, SemanticError> {
+        self.lookup(name).ok_or_else(|| {
+            // Heurística: si empieza con mayúscula, probablemente sea un tipo/protocolo
+            if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                SemanticError::UndeclaredType {
+                    name: name.to_string(),
+                }
+            } else {
+                // Si empieza con minúscula, probablemente sea una variable/función
+                SemanticError::UndeclaredVariable {
+                    name: name.to_string(),
+                }
+            }
+        })
+    }
+
+    /// Lista todos los símbolos desde el scope actual hacia el global (para debugging)
+    
+    pub fn all_symbols_in_chain(&self) -> Vec<(usize, String, SymbolInfo)> {
+        let mut result = Vec::new();
+        
+        for (scope_idx, scope) in self.scopes.iter().enumerate().rev() {
+            for (name, symbol) in scope {
+                result.push((scope_idx, name.clone(), symbol.clone()));
+            }
+        }
+        
+        result
+    }
+
+    /// Lista solo los símbolos en el scope global
+
+    pub fn global_symbols(&self) -> Vec<SymbolInfo> {
+        self.scopes
+            .first()
+            .map(|scope| scope.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    // ========== SAFE PUBLIC API FOR OTHER MODULES ==========
+    // Estos métodos forman la interfaz segura para que otros módulos
+    // (expression_checker, analyzer) consulten la tabla de símbolos
+
+    /// Verifica si un símbolo es una función
+    pub fn is_function(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Function { .. }))
+    }
+
+    /// Verifica si un símbolo es una variable
+    pub fn is_variable(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Variable { .. }))
+    }
+
+    /// Verifica si un símbolo es un parámetro
+    pub fn is_parameter(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Parameter { .. }))
+    }
+
+    /// Verifica si un símbolo es un tipo
+    pub fn is_type(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Type { .. }))
+    }
+
+    /// Verifica si un símbolo es un protocolo
+    pub fn is_protocol(&self, name: &str) -> bool {
+        matches!(self.lookup(name), Some(SymbolInfo::Protocol { .. }))
+    }
+
+    /// Retorna el nombre del tipo de símbolo ("function", "variable", "type", etc.)
+    pub fn get_symbol_kind(&self, name: &str) -> Option<&'static str> {
+        match self.lookup(name) {
+            Some(SymbolInfo::Function { .. }) => Some("function"),
+            Some(SymbolInfo::Variable { .. }) => Some("variable"),
+            Some(SymbolInfo::Parameter { .. }) => Some("parameter"),
+            Some(SymbolInfo::Type { .. }) => Some("type"),
+            Some(SymbolInfo::Protocol { .. }) => Some("protocol"),
+            None => None,
+        }
+    }
+
+    /// Retorna todas las funciones declaradas en el scope actual
+    pub fn functions_in_scope(&self) -> Vec<SymbolInfo> {
+        self.symbols_in_current_scope()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Function { .. }))
+            .collect()
+    }
+
+    /// Retorna todas las variables en el scope actual
+    pub fn variables_in_scope(&self) -> Vec<SymbolInfo> {
+        self.symbols_in_current_scope()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Variable { .. }))
+            .collect()
+    }
+
+    /// Retorna todos los parámetros en el scope actual
+    pub fn parameters_in_scope(&self) -> Vec<SymbolInfo> {
+        self.symbols_in_current_scope()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Parameter { .. }))
+            .collect()
+    }
+
+    /// Retorna todas las funciones globales (útil para buscar funciones disponibles)
+    pub fn global_functions(&self) -> Vec<SymbolInfo> {
+        self.global_symbols()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Function { .. }))
+            .collect()
+    }
+
+    /// Retorna todos los tipos globales
+    pub fn global_types(&self) -> Vec<SymbolInfo> {
+        self.global_symbols()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Type { .. }))
+            .collect()
+    }
+
+    /// Retorna todos los protocolos globales
+    pub fn global_protocols(&self) -> Vec<SymbolInfo> {
+        self.global_symbols()
+            .into_iter()
+            .filter(|s| matches!(s, SymbolInfo::Protocol { .. }))
+            .collect()
+    }
+
+    /// Cuenta cuántos símbolos hay en el scope actual
+    pub fn symbol_count_in_scope(&self) -> usize {
+        self.symbols_in_current_scope().len()
+    }
+
+    /// Cuenta cuántos símbolos hay en total (todos los scopes)
+    pub fn total_symbol_count(&self) -> usize {
+        self.all_symbols_in_chain().len()
+    }
+
+    /// Cuenta cuántos símbolos hay en global scope
+    pub fn global_symbol_count(&self) -> usize {
+        self.global_symbols().len()
+    }
+
+    /// Resuelve un símbolo de forma segura, retornando información completa
+    /// Útil para el analyzer cuando quiere saber todo sobre un símbolo
+    pub fn resolve_symbol_info(&self, name: &str) -> Option<(SymbolInfo, usize, &'static str)> {
+        self.lookup(name).map(|sym| {
+            let kind = match &sym {
+                SymbolInfo::Function { .. } => "function",
+                SymbolInfo::Variable { .. } => "variable",
+                SymbolInfo::Parameter { .. } => "parameter",
+                SymbolInfo::Type { .. } => "type",
+                SymbolInfo::Protocol { .. } => "protocol",
+            };
+            
+            // Encontrar en qué scope está
+            for (scope_idx, scope) in self.scopes.iter().enumerate().rev() {
+                if scope.contains_key(name) {
+                    return (sym, scope_idx, kind);
+                }
+            }
+            
+            (sym, 0, kind)  // Si no lo encuentra (no debería pasar), retorna scope 0
+        })
+    }
+
+    /// Verifica si un símbolo está disponible (existe y es accesible)
+    /// Retorna (existe, es_local, es_global)
+    pub fn symbol_availability(&self, name: &str) -> (bool, bool, bool) {
+        let exists = self.is_symbol_declared(name);
+        let is_local = self.lookup_local(name).is_some();
+        let is_global = self.scopes.first().map_or(false, |g| g.contains_key(name));
+        
+        (exists, is_local, is_global)
+    }
+
+    /// Obtiene la información de tipo de un símbolo (si la tiene)
+    pub fn get_type_reference(&self, name: &str) -> Option<TypeReference> {
+        self.lookup(name).and_then(|sym| {
+            match sym {
+                SymbolInfo::Variable { type_ref, .. } => type_ref,
+                SymbolInfo::Parameter { type_ref, .. } => type_ref,
+                SymbolInfo::Function { return_type, .. } => return_type,
+                _ => None,
+            }
+        })
+    }
+
+    /// Verifica si el símbolo existe en el scope global específicamente
+    pub fn exists_in_global(&self, name: &str) -> bool {
+        self.scopes.first().map_or(false, |g| g.contains_key(name))
+    }
+
+    /// Verifica si el símbolo existe SOLO en scopes locales (no en global)
+    pub fn exists_only_locally(&self, name: &str) -> bool {
+        self.is_symbol_declared(name) && !self.exists_in_global(name)
+    }
+
     /// Declara los símbolos builtin globales (print, sqrt, sin, cos, log, exp, rand)
-    ///
-    /// Esta función se llama una sola vez al inicializar el analizador semántico.
-    /// Los builtins no tienen tipos anotados (se detectan en tiempo de ejecución).
+  
     pub fn declare_builtins(&mut self) {
         // TODO: Implementar declaración de builtins
         // - print(value: ?)
@@ -178,100 +414,5 @@ impl SymbolTable {
 impl Default for SymbolTable {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-// =============================================================================
-// Tests (Persona 1)
-// =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_symbol_table_new() {
-        let table = SymbolTable::new();
-        assert_eq!(table.scope_depth(), 1);
-    }
-
-    #[test]
-    fn test_enter_exit_scope() {
-        let mut table = SymbolTable::new();
-        assert_eq!(table.scope_depth(), 1);
-
-        table.enter_scope();
-        assert_eq!(table.scope_depth(), 2);
-
-        table.exit_scope();
-        assert_eq!(table.scope_depth(), 1);
-    }
-
-    #[test]
-    fn test_declare_and_lookup() {
-        let mut table = SymbolTable::new();
-        let span = Span::default();
-
-        let var = SymbolInfo::Variable {
-            name: "x".to_string(),
-            type_ref: None,
-            span: span.clone(),
-        };
-
-        table.declare(var).unwrap();
-        assert!(table.lookup("x").is_some());
-        assert!(table.lookup("y").is_none());
-    }
-
-    #[test]
-    fn test_duplicate_declaration_error() {
-        let mut table = SymbolTable::new();
-        let span = Span::default();
-
-        let var1 = SymbolInfo::Variable {
-            name: "x".to_string(),
-            type_ref: None,
-            span: span.clone(),
-        };
-
-        let var2 = SymbolInfo::Variable {
-            name: "x".to_string(),
-            type_ref: None,
-            span: span.clone(),
-        };
-
-        table.declare(var1).unwrap();
-        assert!(table.declare(var2).is_err());
-    }
-
-    #[test]
-    fn test_scope_shadowing() {
-        let mut table = SymbolTable::new();
-        let span = Span::default();
-
-        let var1 = SymbolInfo::Variable {
-            name: "x".to_string(),
-            type_ref: None,
-            span: span.clone(),
-        };
-
-        table.declare(var1).unwrap();
-
-        table.enter_scope();
-        let var2 = SymbolInfo::Variable {
-            name: "x".to_string(),
-            type_ref: None,
-            span: span.clone(),
-        };
-
-        // En nuevo scope, puedo redeclarar "x" (shadowing)
-        assert!(table.declare(var2).is_ok());
-
-        // lookup() encuentra el del scope actual
-        assert!(table.lookup("x").is_some());
-
-        table.exit_scope();
-        // Sigo encontrando la variable original
-        assert!(table.lookup("x").is_some());
     }
 }

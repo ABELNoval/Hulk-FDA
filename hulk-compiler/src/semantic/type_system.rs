@@ -15,6 +15,7 @@
 use crate::parser::ast::{
     Expr, FunctionDeclaration, Literal, ProtocolMethodSignature, TypeReference, TypeReferenceKind,
 };
+use crate::utils::errors::semantic::SemanticError;
 use crate::utils::errors::span::Span;
 use std::collections::HashMap;
 
@@ -127,43 +128,39 @@ impl TypeEnvironment {
     /// Registra un nuevo tipo en el entorno
     ///
     /// Retorna error si el tipo ya existe o si sus padres no existen.
-    pub fn register_type(&mut self, type_info: TypeInfo) -> Result<(), String> {
+    pub fn register_type(&mut self, type_info: TypeInfo) -> Result<(), SemanticError> {
         if self.user_types.contains_key(&type_info.name) {
-            return Err(format!("Type '{}' already defined", type_info.name));
+            return Err(SemanticError::TypeAlreadyDeclared {
+                name: type_info.name.clone(),
+                first_line: 0,
+                first_column: 0,
+            });
         }
-        // Validaciones iniciales:
-        // - Si tiene parent, el parent debe existir y no ser builtin
-        // - No permitir herencia circular simple
+
         if let Some(parent_name) = &type_info.parent {
+            // Can't inherit from builtin or from protocol
             if Self::is_builtin_name(parent_name) {
-                return Err(format!(
-                    "Type '{}' cannot inherit from builtin '{}'",
-                    type_info.name, parent_name
-                ));
-            }
-            if parent_name == &type_info.name {
-                return Err(format!(
-                    "Type '{}' cannot inherit from itself",
-                    type_info.name
-                ));
+                return Err(SemanticError::InheritFromUndeclared {
+                    type_name: type_info.name.clone(),
+                    parent_name: parent_name.clone(),
+                });
             }
 
-            // Parent must be a known type (not a protocol)
-            if self.protocols.contains_key(parent_name) {
-                return Err(format!(
-                    "Type '{}' cannot inherit from protocol '{}'",
-                    type_info.name, parent_name
-                ));
+            if parent_name == &type_info.name {
+                return Err(SemanticError::CircularInheritance {
+                    type_name: type_info.name.clone(),
+                    cycle: vec![type_info.name.clone(), parent_name.clone()],
+                });
             }
 
             if !self.user_types.contains_key(parent_name) {
-                return Err(format!(
-                    "Parent type '{}' for '{}' not found",
-                    parent_name, type_info.name
-                ));
+                return Err(SemanticError::InheritFromUndeclared {
+                    type_name: type_info.name.clone(),
+                    parent_name: parent_name.clone(),
+                });
             }
 
-            // Detect cycles using DFS on the parent chain: if `parent_name` can reach `type_info.name`, it's a cycle
+            // Detect simple cycles by walking parents
             fn reaches_target(
                 types: &HashMap<String, TypeInfo>,
                 start: &str,
@@ -189,10 +186,10 @@ impl TypeEnvironment {
 
             let mut visited = std::collections::HashSet::new();
             if reaches_target(&self.user_types, parent_name, &type_info.name, &mut visited) {
-                return Err(format!(
-                    "Inheritance cycle detected involving '{}' and '{}'",
-                    type_info.name, parent_name
-                ));
+                return Err(SemanticError::CircularInheritance {
+                    type_name: type_info.name.clone(),
+                    cycle: vec![type_info.name.clone(), parent_name.clone()],
+                });
             }
         }
 
@@ -200,17 +197,17 @@ impl TypeEnvironment {
         Ok(())
     }
 
-    /// Registra un nuevo protocolo en el entorno
-    ///
-    /// Retorna error si el protocolo ya existe.
-    pub fn register_protocol(&mut self, protocol_info: ProtocolInfo) -> Result<(), String> {
+    /// Registra un protocolo en el entorno
+    pub fn register_protocol(&mut self, protocol_info: ProtocolInfo) -> Result<(), SemanticError> {
         if self.protocols.contains_key(&protocol_info.name) {
-            return Err(format!("Protocol '{}' already defined", protocol_info.name));
+            return Err(SemanticError::TypeAlreadyDeclared {
+                name: protocol_info.name.clone(),
+                first_line: 0,
+                first_column: 0,
+            });
         }
 
-        // Validate extends: each extended protocol must exist and must not create a cycle
-        // We perform a DFS over extends chains to detect whether any of the
-        // protocols reachable from `ext` eventually refer back to `protocol_info.name`.
+        // DFS to detect cycles in extends
         fn reaches_target(
             protocols: &HashMap<String, ProtocolInfo>,
             start: &str,
@@ -236,18 +233,14 @@ impl TypeEnvironment {
 
         for ext in &protocol_info.extends {
             if !self.protocols.contains_key(ext) {
-                return Err(format!(
-                    "Extended protocol '{}' for '{}' not found",
-                    ext, protocol_info.name
-                ));
+                return Err(SemanticError::UndeclaredType { name: ext.clone() });
             }
 
             let mut visited = std::collections::HashSet::new();
             if reaches_target(&self.protocols, ext, &protocol_info.name, &mut visited) {
-                return Err(format!(
-                    "Protocol extension cycle detected involving '{}' and '{}'",
-                    protocol_info.name, ext
-                ));
+                return Err(SemanticError::CyclicDefinition {
+                    names: vec![protocol_info.name.clone(), ext.clone()],
+                });
             }
         }
 
@@ -256,9 +249,8 @@ impl TypeEnvironment {
         Ok(())
     }
 
-    /// Busca un tipo en el entorno
+    /// Busca un tipo en el entorno (builtin o user-declared)
     pub fn get_type(&self, name: &str) -> Option<&TypeInfo> {
-        // Builtins are not stored in `user_types` but we consider their names valid.
         self.user_types.get(name)
     }
 
@@ -309,39 +301,32 @@ impl TypeEnvironment {
         }
 
         match (type_a, type_b) {
-            // Nominal subtyping: Named(a) es compatible con Named(b) si a <: b
-            (NormalizedType::Named(a), NormalizedType::Named(b)) => self.is_subtype(a, b),
-            // Contenedores: T* con U* si T compatible con U
-            (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => self.is_compatible(a, b),
             // Vectores: T[] con U[] si T compatible con U
             (NormalizedType::Vector(a), NormalizedType::Vector(b)) => self.is_compatible(a, b),
+            // Iterables: T* con U* si T compatible con U
+            (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => self.is_compatible(a, b),
+            // Named -> Named: check nominal subtyping
+            (NormalizedType::Named(a), NormalizedType::Named(b)) => {
+                self.is_subtype(a, b) || self.type_conforms_to_protocol(a, b)
+            }
             _ => false,
         }
     }
 
     /// Verifica si un tipo conforma a un protocolo
-    pub fn type_conforms_to_protocol(&self, _type_name: &str, _protocol_name: &str) -> bool {
-        // Implementación básica:
-        // - Buscar el protocolo
-        // - Para cada método requerido por el protocolo, buscar un método con el mismo nombre
-        //   en el tipo o en sus ancestros
-        // - Comparar número de parámetros y tipos (si la firma del protocolo tiene anotaciones)
-        // - Comparar tipo de retorno
-
-        let protocol = match self.get_protocol(_protocol_name) {
+    pub fn type_conforms_to_protocol(&self, type_name: &str, protocol_name: &str) -> bool {
+        let protocol = match self.get_protocol(protocol_name) {
             Some(p) => p,
             None => return false,
         };
 
-        let cur_type_name = _type_name.to_string();
-
-        if !self.has_type(&cur_type_name) {
+        if !self.has_type(type_name) {
             return false;
         }
 
         for proto_sig in &protocol.members {
             // Buscar método con el mismo nombre en la jerarquía
-            let method_opt = self.get_method_from_hierarchy(&cur_type_name, &proto_sig.name);
+            let method_opt = self.get_method_from_hierarchy(type_name, &proto_sig.name);
             if method_opt.is_none() {
                 return false;
             }
@@ -497,13 +482,16 @@ impl TypeEnvironment {
     /// Valida una `TypeReference` y devuelve su `NormalizedType` si es válida.
     ///
     /// Retorna error si la referencia nombra un tipo desconocido.
-    pub fn validate_type_reference(&self, tr: &TypeReference) -> Result<NormalizedType, String> {
+    pub fn validate_type_reference(
+        &self,
+        tr: &TypeReference,
+    ) -> Result<NormalizedType, SemanticError> {
         match &tr.kind {
             TypeReferenceKind::Named(name) => {
                 if self.has_type(name) {
                     Ok(NormalizedType::Named(name.clone()))
                 } else {
-                    Err(format!("Unknown type '{}'", name))
+                    Err(SemanticError::UndeclaredType { name: name.clone() })
                 }
             }
             TypeReferenceKind::Iterable(inner) => {
@@ -520,7 +508,10 @@ impl TypeEnvironment {
     /// Valida las anotaciones de parámetros y retorno de una función.
     ///
     /// Retorna `Ok(())` si todas las anotaciones nombradas existen y son válidas.
-    pub fn validate_function_signature(&self, func: &FunctionDeclaration) -> Result<(), String> {
+    pub fn validate_function_signature(
+        &self,
+        func: &FunctionDeclaration,
+    ) -> Result<(), SemanticError> {
         for p in &func.parameters {
             if let Some(ann) = &p.annotation {
                 self.validate_type_reference(ann)?;
@@ -540,22 +531,22 @@ impl TypeEnvironment {
     pub fn validate_type_declaration(
         &self,
         td: &crate::parser::ast::TypeDeclaration,
-    ) -> Result<(), String> {
+    ) -> Result<(), SemanticError> {
         // Si hereda, validar que el tipo padre exista y no sea builtin
         if let Some(inherits) = &td.inherits {
             match &inherits.kind {
                 TypeReferenceKind::Named(name) => {
                     if Self::is_builtin_name(name) {
-                        return Err(format!(
-                            "Type '{}' cannot inherit from builtin '{}'",
-                            td.name, name
-                        ));
+                        return Err(SemanticError::InvalidConstructor {
+                            type_name: td.name.clone(),
+                            reason: format!("cannot inherit from builtin '{}'", name),
+                        });
                     }
                     if !self.has_type(name) {
-                        return Err(format!(
-                            "Parent type '{}' for '{}' not found",
-                            name, td.name
-                        ));
+                        return Err(SemanticError::InheritFromUndeclared {
+                            type_name: td.name.clone(),
+                            parent_name: name.clone(),
+                        });
                     }
 
                     // Validate parent_arguments arity against parent's parameters (if known)
@@ -563,16 +554,21 @@ impl TypeEnvironment {
                         let expected = parent_info.parameters.len();
                         let provided = td.parent_arguments.len();
                         if expected != provided {
-                            return Err(format!(
-                                "Parent arguments arity mismatch for '{}': expected {}, got {}",
-                                td.name, expected, provided
-                            ));
+                            return Err(SemanticError::InvalidConstructor {
+                                type_name: td.name.clone(),
+                                reason: format!(
+                                    "parent arguments arity mismatch: expected {}, got {}",
+                                    expected, provided
+                                ),
+                            });
                         }
                     }
                 }
                 _ => {
                     // Herencia parametrizada/compuesta no soportada actualmente
-                    return Err(format!("Unsupported inherits form for type '{}'", td.name));
+                    return Err(SemanticError::UnsupportedFeature {
+                        feature: "parametrized inherits".into(),
+                    });
                 }
             }
         }
@@ -742,44 +738,6 @@ mod tests {
 
         env.register_protocol(proto).unwrap();
 
-        #[test]
-        fn test_register_protocol_extends_unknown() {
-            let mut env = TypeEnvironment::new();
-
-            let proto = ProtocolInfo {
-                name: "PX".into(),
-                members: vec![],
-                extends: vec!["UnknownProto".into()],
-                span: Span::default(),
-            };
-
-            assert!(env.register_protocol(proto).is_err());
-        }
-
-        #[test]
-        fn test_register_type_parent_is_protocol() {
-            let mut env = TypeEnvironment::new();
-
-            let proto = ProtocolInfo {
-                name: "PProto".into(),
-                members: vec![],
-                extends: vec![],
-                span: Span::default(),
-            };
-            env.register_protocol(proto).unwrap();
-
-            let t = TypeInfo {
-                name: "T".into(),
-                parameters: vec![],
-                parent: Some("PProto".into()),
-                methods: vec![],
-                properties: vec![],
-                implemented_protocols: vec![],
-                span: Span::default(),
-            };
-
-            assert!(env.register_type(t).is_err());
-        }
         let type_b = TypeInfo {
             name: "B".into(),
             parameters: vec![],

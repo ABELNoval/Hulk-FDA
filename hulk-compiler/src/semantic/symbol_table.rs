@@ -187,10 +187,9 @@ impl SymbolTable {
         self.scope_depth() == 1
     }
 
-    /// Retorna el símbolo o un error descriptivo (usando String)
-    pub fn get_symbol(&self, name: &str) -> Result<SymbolInfo, String> {
-        self.lookup(name)
-            .ok_or_else(|| format!("Symbol '{}' is not declared", name))
+    /// Retorna el símbolo o un `SemanticError` si no está declarado.
+    pub fn get_symbol(&self, name: &str) -> Result<SymbolInfo, SemanticError> {
+        self.get_symbol_or_error(name)
     }
 
     /// Retorna el símbolo o un SemanticError si no está declarado

@@ -421,6 +421,89 @@ impl TypeEnvironment {
     pub fn all_protocols(&self) -> Vec<&ProtocolInfo> {
         self.protocols.values().collect()
     }
+
+    /// Valida una `TypeReference` y devuelve su `NormalizedType` si es válida.
+    ///
+    /// Retorna error si la referencia nombra un tipo desconocido.
+    pub fn validate_type_reference(&self, tr: &TypeReference) -> Result<NormalizedType, String> {
+        match &tr.kind {
+            TypeReferenceKind::Named(name) => {
+                if self.has_type(name) {
+                    Ok(NormalizedType::Named(name.clone()))
+                } else {
+                    Err(format!("Unknown type '{}'", name))
+                }
+            }
+            TypeReferenceKind::Iterable(inner) => {
+                let inner_nt = self.validate_type_reference(inner)?;
+                Ok(NormalizedType::Iterable(Box::new(inner_nt)))
+            }
+            TypeReferenceKind::Vector(inner) => {
+                let inner_nt = self.validate_type_reference(inner)?;
+                Ok(NormalizedType::Vector(Box::new(inner_nt)))
+            }
+        }
+    }
+
+    /// Valida las anotaciones de parámetros y retorno de una función.
+    ///
+    /// Retorna `Ok(())` si todas las anotaciones nombradas existen y son válidas.
+    pub fn validate_function_signature(&self, func: &FunctionDeclaration) -> Result<(), String> {
+        for p in &func.parameters {
+            if let Some(ann) = &p.annotation {
+                self.validate_type_reference(ann)?;
+            }
+        }
+
+        if let Some(ret) = &func.return_type {
+            self.validate_type_reference(ret)?;
+        }
+
+        Ok(())
+    }
+
+    /// Valida una declaración de tipo: su `inherits` y las anotaciones de atributos.
+    /// Actualmente valida que el tipo padre (si existe) esté declarado y que
+    /// las anotaciones de atributos referencien tipos válidos.
+    pub fn validate_type_declaration(
+        &self,
+        td: &crate::parser::ast::TypeDeclaration,
+    ) -> Result<(), String> {
+        // Si hereda, validar que el tipo padre exista y no sea builtin
+        if let Some(inherits) = &td.inherits {
+            match &inherits.kind {
+                TypeReferenceKind::Named(name) => {
+                    if Self::is_builtin_name(name) {
+                        return Err(format!(
+                            "Type '{}' cannot inherit from builtin '{}'",
+                            td.name, name
+                        ));
+                    }
+                    if !self.has_type(name) {
+                        return Err(format!(
+                            "Parent type '{}' for '{}' not found",
+                            name, td.name
+                        ));
+                    }
+                }
+                _ => {
+                    // Herencia parametrizada/compuesta no soportada actualmente
+                    return Err(format!("Unsupported inherits form for type '{}'", td.name));
+                }
+            }
+        }
+
+        // Validar anotaciones en atributos
+        for member in &td.members {
+            if let crate::parser::ast::TypeMember::Attribute(attr) = member {
+                if let Some(ann) = &attr.annotation {
+                    self.validate_type_reference(ann)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for TypeEnvironment {
@@ -628,5 +711,102 @@ mod tests {
         // get_method_in_parent should also find it and indicate it's from parent
         let mp = env.get_method_in_parent("B", "parent_m");
         assert!(mp.is_some());
+    }
+
+    #[test]
+    fn test_validate_type_reference_and_function_signature() {
+        let mut env = TypeEnvironment::new();
+
+        let type_a = TypeInfo {
+            name: "A".into(),
+            parent: None,
+            methods: vec![],
+            properties: vec![],
+            implemented_protocols: vec![],
+            span: Span::default(),
+        };
+
+        env.register_type(type_a).unwrap();
+
+        // Valid named type
+        let tr_a = TypeReference::new("A".into(), Span::default());
+        assert!(env.validate_type_reference(&tr_a).is_ok());
+
+        // Unknown type
+        let tr_x = TypeReference::new("X".into(), Span::default());
+        assert!(env.validate_type_reference(&tr_x).is_err());
+
+        // Function signature valid
+        let func = FunctionDeclaration {
+            name: "f".into(),
+            parameters: vec![crate::parser::ast::Parameter::new(
+                "p".into(),
+                Some(TypeReference::new("A".into(), Span::default())),
+                Span::default(),
+            )],
+            return_type: Some(TypeReference::new("Number".into(), Span::default())),
+            body: Expr::literal(Literal::Number(0.0), Span::default()),
+        };
+
+        assert!(env.validate_function_signature(&func).is_ok());
+
+        // Function signature invalid (unknown param type)
+        let func2 = FunctionDeclaration {
+            name: "g".into(),
+            parameters: vec![crate::parser::ast::Parameter::new(
+                "p".into(),
+                Some(TypeReference::new("X".into(), Span::default())),
+                Span::default(),
+            )],
+            return_type: None,
+            body: Expr::literal(Literal::Number(0.0), Span::default()),
+        };
+
+        assert!(env.validate_function_signature(&func2).is_err());
+    }
+
+    #[test]
+    fn test_validate_type_declaration() {
+        let mut env = TypeEnvironment::new();
+
+        let type_a = TypeInfo {
+            name: "A".into(),
+            parent: None,
+            methods: vec![],
+            properties: vec![],
+            implemented_protocols: vec![],
+            span: Span::default(),
+        };
+
+        env.register_type(type_a).unwrap();
+
+        // Type declaration that inherits A and has an attribute annotated A
+        let td = crate::parser::ast::TypeDeclaration {
+            name: "B".into(),
+            parameters: vec![],
+            inherits: Some(TypeReference::new("A".into(), Span::default())),
+            parent_arguments: vec![],
+            members: vec![crate::parser::ast::TypeMember::Attribute(
+                crate::parser::ast::AttributeDeclaration {
+                    name: "x".into(),
+                    annotation: Some(TypeReference::new("A".into(), Span::default())),
+                    initializer: Expr::literal(Literal::Number(0.0), Span::default()),
+                    span: Span::default(),
+                },
+            )],
+        };
+
+        assert!(env.validate_type_declaration(&td).is_ok());
+
+        // Invalid: inherits unknown type
+        let td2 = crate::parser::ast::TypeDeclaration {
+            name: "C".into(),
+            parameters: vec![],
+            inherits: Some(TypeReference::new("X".into(), Span::default())),
+            parent_arguments: vec![],
+            members: vec![],
+        };
+
+        assert!(env.validate_type_declaration(&td2).is_err());
     }
 }

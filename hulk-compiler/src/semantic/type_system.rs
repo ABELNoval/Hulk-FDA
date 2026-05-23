@@ -13,7 +13,7 @@
 // =============================================================================
 
 use crate::parser::ast::{
-    FunctionDeclaration, ProtocolMethodSignature, TypeReference, TypeReferenceKind,
+    Expr, FunctionDeclaration, Literal, ProtocolMethodSignature, TypeReference, TypeReferenceKind,
 };
 use crate::utils::errors::span::Span;
 use std::collections::HashMap;
@@ -134,22 +134,34 @@ impl TypeEnvironment {
         // - No permitir herencia circular simple
         if let Some(parent_name) = &type_info.parent {
             if Self::is_builtin_name(parent_name) {
-                return Err(format!("Type '{}' cannot inherit from builtin '{}'", type_info.name, parent_name));
+                return Err(format!(
+                    "Type '{}' cannot inherit from builtin '{}'",
+                    type_info.name, parent_name
+                ));
             }
 
             if parent_name == &type_info.name {
-                return Err(format!("Type '{}' cannot inherit from itself", type_info.name));
+                return Err(format!(
+                    "Type '{}' cannot inherit from itself",
+                    type_info.name
+                ));
             }
 
             if !self.has_type(parent_name) {
-                return Err(format!("Parent type '{}' for '{}' not found", parent_name, type_info.name));
+                return Err(format!(
+                    "Parent type '{}' for '{}' not found",
+                    parent_name, type_info.name
+                ));
             }
 
             // Detect simple cycles: walk up the parent chain and ensure we don't encounter the new type name
             let mut cur = parent_name.clone();
             while let Some(next_parent) = self.get_parent_type(&cur) {
                 if next_parent == type_info.name {
-                    return Err(format!("Inheritance cycle detected involving '{}' and '{}'", type_info.name, cur));
+                    return Err(format!(
+                        "Inheritance cycle detected involving '{}' and '{}'",
+                        type_info.name, cur
+                    ));
                 }
                 cur = next_parent;
             }
@@ -205,9 +217,7 @@ impl TypeEnvironment {
             | (NormalizedType::String, NormalizedType::String)
             | (NormalizedType::Boolean, NormalizedType::Boolean) => true,
             (NormalizedType::Named(a), NormalizedType::Named(b)) => a == b,
-            (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => {
-                self.types_equal(a, b)
-            }
+            (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => self.types_equal(a, b),
             (NormalizedType::Vector(a), NormalizedType::Vector(b)) => self.types_equal(a, b),
             (NormalizedType::Unknown, NormalizedType::Unknown) => true,
             _ => false,
@@ -228,13 +238,9 @@ impl TypeEnvironment {
 
         match (type_a, type_b) {
             // Nominal subtyping: Named(a) es compatible con Named(b) si a <: b
-            (NormalizedType::Named(a), NormalizedType::Named(b)) => {
-                self.is_subtype(a, b)
-            }
+            (NormalizedType::Named(a), NormalizedType::Named(b)) => self.is_subtype(a, b),
             // Contenedores: T* con U* si T compatible con U
-            (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => {
-                self.is_compatible(a, b)
-            }
+            (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => self.is_compatible(a, b),
             // Vectores: T[] con U[] si T compatible con U
             (NormalizedType::Vector(a), NormalizedType::Vector(b)) => self.is_compatible(a, b),
             _ => false,
@@ -243,10 +249,93 @@ impl TypeEnvironment {
 
     /// Verifica si un tipo conforma a un protocolo
     pub fn type_conforms_to_protocol(&self, _type_name: &str, _protocol_name: &str) -> bool {
-        // TODO: Implementar conformancia
-        // - El tipo debe implementar todos los métodos del protocolo
-        // - Con las firmas correctas
-        false
+        // Implementación básica:
+        // - Buscar el protocolo
+        // - Para cada método requerido por el protocolo, buscar un método con el mismo nombre
+        //   en el tipo o en sus ancestros
+        // - Comparar número de parámetros y tipos (si la firma del protocolo tiene anotaciones)
+        // - Comparar tipo de retorno
+
+        let protocol = match self.get_protocol(_protocol_name) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let cur_type_name = _type_name.to_string();
+
+        if !self.has_type(&cur_type_name) {
+            return false;
+        }
+
+        for proto_sig in &protocol.members {
+            // Buscar método con el mismo nombre en la jerarquía
+            let method_opt = self.get_method_from_hierarchy(&cur_type_name, &proto_sig.name);
+            if method_opt.is_none() {
+                return false;
+            }
+
+            let method = method_opt.unwrap();
+
+            // Parámetros: el protocolo puede o no anotar los parámetros.
+            if method.parameters.len() != proto_sig.parameters.len() {
+                return false;
+            }
+
+            for (m_param, p_param) in method.parameters.iter().zip(proto_sig.parameters.iter()) {
+                match (&m_param.annotation, &p_param.annotation) {
+                    (_, None) => {
+                        // protocolo no exige tipo para este parámetro -> ok
+                    }
+                    (Some(m_ann), Some(p_ann)) => {
+                        let m_t = NormalizedType::from_type_reference(m_ann);
+                        let p_t = NormalizedType::from_type_reference(p_ann);
+                        if !self.is_compatible(&m_t, &p_t) {
+                            return false;
+                        }
+                    }
+                    (None, Some(_)) => {
+                        // método no anotó pero protocolo sí -> no conforme
+                        return false;
+                    }
+                }
+            }
+
+            // Return type: protocolo exige un return_type concreto
+            if let Some(m_ret) = &method.return_type {
+                let m_rt = NormalizedType::from_type_reference(m_ret);
+                let p_rt = NormalizedType::from_type_reference(&proto_sig.return_type);
+                if !self.is_compatible(&m_rt, &p_rt) {
+                    return false;
+                }
+            } else {
+                // método no anotó retorno pero protocolo sí -> no conforme
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Busca un método llamado `method_name` en `type_name` o cualquiera de sus ancestros
+    fn get_method_from_hierarchy(
+        &self,
+        type_name: &str,
+        method_name: &str,
+    ) -> Option<FunctionDeclaration> {
+        let mut cur = type_name.to_string();
+        while let Some(tinfo) = self.user_types.get(&cur) {
+            for m in &tinfo.methods {
+                if m.name == method_name {
+                    return Some(m.clone());
+                }
+            }
+            if let Some(parent) = &tinfo.parent {
+                cur = parent.clone();
+            } else {
+                break;
+            }
+        }
+        None
     }
 
     /// Obtiene el tipo padre (si existe) para herencia
@@ -287,6 +376,40 @@ impl TypeEnvironment {
             cur = parent;
         }
         res
+    }
+
+    /// Resolver el tipo `self` cuando estamos dentro de un método de `type_name`.
+    /// Básicamente devuelve el tipo nominal correspondiente.
+    pub fn resolve_self_type(&self, type_name: &str) -> NormalizedType {
+        NormalizedType::Named(type_name.to_string())
+    }
+
+    /// Busca un método en los ancestros (excluyendo el propio `type_name`).
+    /// Útil para `base.member` donde queremos obtener el miembro proveniente del padre.
+    pub fn get_method_in_parent(
+        &self,
+        type_name: &str,
+        method_name: &str,
+    ) -> Option<FunctionDeclaration> {
+        let mut cur = match self.get_parent_type(type_name) {
+            Some(p) => p,
+            None => return None,
+        };
+
+        while let Some(tinfo) = self.user_types.get(&cur) {
+            for m in &tinfo.methods {
+                if m.name == method_name {
+                    return Some(m.clone());
+                }
+            }
+            if let Some(parent) = &tinfo.parent {
+                cur = parent.clone();
+            } else {
+                break;
+            }
+        }
+
+        None
     }
 
     /// Lista todos los tipos registrados
@@ -384,5 +507,126 @@ mod tests {
         let t_num_iter = NormalizedType::Iterable(Box::new(NormalizedType::Number));
         let t_num_iter2 = NormalizedType::Iterable(Box::new(NormalizedType::Number));
         assert!(env.is_compatible(&t_num_iter, &t_num_iter2));
+    }
+
+    #[test]
+    fn test_protocol_conformance_positive() {
+        let mut env = TypeEnvironment::new();
+
+        // Protocol P { fn m() -> Number }
+        let proto_sig = ProtocolMethodSignature {
+            name: "m".into(),
+            parameters: vec![],
+            return_type: TypeReference::new("Number".into(), Span::default()),
+            span: Span::default(),
+        };
+
+        let proto = ProtocolInfo {
+            name: "P".into(),
+            members: vec![proto_sig],
+            span: Span::default(),
+        };
+
+        env.register_protocol(proto).unwrap();
+
+        // Type A { fn m() -> Number }
+        let func = FunctionDeclaration {
+            name: "m".into(),
+            parameters: vec![],
+            return_type: Some(TypeReference::new("Number".into(), Span::default())),
+            body: Expr::literal(Literal::Number(0.0), Span::default()),
+        };
+
+        let type_a = TypeInfo {
+            name: "A".into(),
+            parent: None,
+            methods: vec![func],
+            properties: vec![],
+            implemented_protocols: vec![],
+            span: Span::default(),
+        };
+
+        env.register_type(type_a).unwrap();
+
+        assert!(env.type_conforms_to_protocol("A", "P"));
+    }
+
+    #[test]
+    fn test_protocol_conformance_negative_missing_method() {
+        let mut env = TypeEnvironment::new();
+
+        let proto_sig = ProtocolMethodSignature {
+            name: "m".into(),
+            parameters: vec![],
+            return_type: TypeReference::new("Number".into(), Span::default()),
+            span: Span::default(),
+        };
+
+        let proto = ProtocolInfo {
+            name: "P2".into(),
+            members: vec![proto_sig],
+            span: Span::default(),
+        };
+
+        env.register_protocol(proto).unwrap();
+
+        let type_b = TypeInfo {
+            name: "B".into(),
+            parent: None,
+            methods: vec![],
+            properties: vec![],
+            implemented_protocols: vec![],
+            span: Span::default(),
+        };
+
+        env.register_type(type_b).unwrap();
+
+        assert!(!env.type_conforms_to_protocol("B", "P2"));
+    }
+
+    #[test]
+    fn test_self_and_base_helpers() {
+        let mut env = TypeEnvironment::new();
+
+        // A has method parent_m
+        let parent_func = FunctionDeclaration {
+            name: "parent_m".into(),
+            parameters: vec![],
+            return_type: Some(TypeReference::new("Number".into(), Span::default())),
+            body: Expr::literal(Literal::Number(0.0), Span::default()),
+        };
+
+        let type_a = TypeInfo {
+            name: "A".into(),
+            parent: None,
+            methods: vec![parent_func],
+            properties: vec![],
+            implemented_protocols: vec![],
+            span: Span::default(),
+        };
+
+        // B inherits A
+        let type_b = TypeInfo {
+            name: "B".into(),
+            parent: Some("A".into()),
+            methods: vec![],
+            properties: vec![],
+            implemented_protocols: vec![],
+            span: Span::default(),
+        };
+
+        env.register_type(type_a).unwrap();
+        env.register_type(type_b).unwrap();
+
+        // resolve_self_type for B
+        assert_eq!(env.resolve_self_type("B").to_string(), "B");
+
+        // get_method_from_hierarchy should find parent_m on B
+        let m = env.get_method_from_hierarchy("B", "parent_m");
+        assert!(m.is_some());
+
+        // get_method_in_parent should also find it and indicate it's from parent
+        let mp = env.get_method_in_parent("B", "parent_m");
+        assert!(mp.is_some());
     }
 }

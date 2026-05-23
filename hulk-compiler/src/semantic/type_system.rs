@@ -34,6 +34,7 @@ pub struct TypeInfo {
 pub struct ProtocolInfo {
     pub name: String,
     pub members: Vec<ProtocolMethodSignature>,
+    pub extends: Vec<String>,
     pub span: Span,
 }
 
@@ -177,6 +178,33 @@ impl TypeEnvironment {
     pub fn register_protocol(&mut self, protocol_info: ProtocolInfo) -> Result<(), String> {
         if self.protocols.contains_key(&protocol_info.name) {
             return Err(format!("Protocol '{}' already defined", protocol_info.name));
+        }
+
+        // Validate extends: each extended protocol must exist and must not create a cycle
+        for ext in &protocol_info.extends {
+            if !self.protocols.contains_key(ext) {
+                return Err(format!(
+                    "Extended protocol '{}' for '{}' not found",
+                    ext, protocol_info.name
+                ));
+            }
+
+            // Walk up the extends chain to detect cycles
+            let mut cur = ext.clone();
+            while let Some(parent_proto) = self.protocols.get(&cur) {
+                if parent_proto.extends.contains(&protocol_info.name) {
+                    return Err(format!(
+                        "Protocol extension cycle detected involving '{}' and '{}'",
+                        protocol_info.name, cur
+                    ));
+                }
+                // pick next extends (simple approach: if multiple, check each via BFS would be more complete)
+                if let Some(next) = parent_proto.extends.get(0) {
+                    cur = next.clone();
+                } else {
+                    break;
+                }
+            }
         }
 
         self.protocols
@@ -607,6 +635,7 @@ mod tests {
         let proto = ProtocolInfo {
             name: "P".into(),
             members: vec![proto_sig],
+            extends: vec![],
             span: Span::default(),
         };
 
@@ -648,6 +677,7 @@ mod tests {
         let proto = ProtocolInfo {
             name: "P2".into(),
             members: vec![proto_sig],
+            extends: vec![],
             span: Span::default(),
         };
 

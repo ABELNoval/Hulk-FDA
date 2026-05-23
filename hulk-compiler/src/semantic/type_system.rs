@@ -22,6 +22,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct TypeInfo {
     pub name: String,
+    pub parameters: Vec<crate::parser::ast::Parameter>,
     pub parent: Option<String>,
     pub methods: Vec<FunctionDeclaration>,
     pub properties: Vec<(String, TypeReference)>,
@@ -181,6 +182,31 @@ impl TypeEnvironment {
         }
 
         // Validate extends: each extended protocol must exist and must not create a cycle
+        // We perform a DFS over extends chains to detect whether any of the
+        // protocols reachable from `ext` eventually refer back to `protocol_info.name`.
+        fn reaches_target(
+            protocols: &HashMap<String, ProtocolInfo>,
+            start: &str,
+            target: &str,
+            visited: &mut std::collections::HashSet<String>,
+        ) -> bool {
+            if start == target {
+                return true;
+            }
+            if visited.contains(start) {
+                return false;
+            }
+            visited.insert(start.to_string());
+            if let Some(p) = protocols.get(start) {
+                for e in &p.extends {
+                    if reaches_target(protocols, e, target, visited) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+
         for ext in &protocol_info.extends {
             if !self.protocols.contains_key(ext) {
                 return Err(format!(
@@ -189,21 +215,12 @@ impl TypeEnvironment {
                 ));
             }
 
-            // Walk up the extends chain to detect cycles
-            let mut cur = ext.clone();
-            while let Some(parent_proto) = self.protocols.get(&cur) {
-                if parent_proto.extends.contains(&protocol_info.name) {
-                    return Err(format!(
-                        "Protocol extension cycle detected involving '{}' and '{}'",
-                        protocol_info.name, cur
-                    ));
-                }
-                // pick next extends (simple approach: if multiple, check each via BFS would be more complete)
-                if let Some(next) = parent_proto.extends.get(0) {
-                    cur = next.clone();
-                } else {
-                    break;
-                }
+            let mut visited = std::collections::HashSet::new();
+            if reaches_target(&self.protocols, ext, &protocol_info.name, &mut visited) {
+                return Err(format!(
+                    "Protocol extension cycle detected involving '{}' and '{}'",
+                    protocol_info.name, ext
+                ));
             }
         }
 
@@ -513,6 +530,18 @@ impl TypeEnvironment {
                             name, td.name
                         ));
                     }
+
+                    // Validate parent_arguments arity against parent's parameters (if known)
+                    if let Some(parent_info) = self.get_type(name) {
+                        let expected = parent_info.parameters.len();
+                        let provided = td.parent_arguments.len();
+                        if expected != provided {
+                            return Err(format!(
+                                "Parent arguments arity mismatch for '{}': expected {}, got {}",
+                                td.name, expected, provided
+                            ));
+                        }
+                    }
                 }
                 _ => {
                     // Herencia parametrizada/compuesta no soportada actualmente
@@ -586,6 +615,7 @@ mod tests {
 
         let type_a = TypeInfo {
             name: "A".into(),
+            parameters: vec![],
             parent: None,
             methods: vec![],
             properties: vec![],
@@ -595,6 +625,7 @@ mod tests {
 
         let type_b = TypeInfo {
             name: "B".into(),
+            parameters: vec![],
             parent: Some("A".into()),
             methods: vec![],
             properties: vec![],
@@ -651,6 +682,7 @@ mod tests {
 
         let type_a = TypeInfo {
             name: "A".into(),
+            parameters: vec![],
             parent: None,
             methods: vec![func],
             properties: vec![],
@@ -683,8 +715,22 @@ mod tests {
 
         env.register_protocol(proto).unwrap();
 
+        #[test]
+        fn test_register_protocol_extends_unknown() {
+            let mut env = TypeEnvironment::new();
+
+            let proto = ProtocolInfo {
+                name: "PX".into(),
+                members: vec![],
+                extends: vec!["UnknownProto".into()],
+                span: Span::default(),
+            };
+
+            assert!(env.register_protocol(proto).is_err());
+        }
         let type_b = TypeInfo {
             name: "B".into(),
+            parameters: vec![],
             parent: None,
             methods: vec![],
             properties: vec![],
@@ -711,6 +757,7 @@ mod tests {
 
         let type_a = TypeInfo {
             name: "A".into(),
+            parameters: vec![],
             parent: None,
             methods: vec![parent_func],
             properties: vec![],
@@ -721,6 +768,7 @@ mod tests {
         // B inherits A
         let type_b = TypeInfo {
             name: "B".into(),
+            parameters: vec![],
             parent: Some("A".into()),
             methods: vec![],
             properties: vec![],
@@ -749,6 +797,7 @@ mod tests {
 
         let type_a = TypeInfo {
             name: "A".into(),
+            parameters: vec![],
             parent: None,
             methods: vec![],
             properties: vec![],
@@ -801,6 +850,7 @@ mod tests {
 
         let type_a = TypeInfo {
             name: "A".into(),
+            parameters: vec![],
             parent: None,
             methods: vec![],
             properties: vec![],
@@ -838,5 +888,32 @@ mod tests {
         };
 
         assert!(env.validate_type_declaration(&td2).is_err());
+
+        // Parent arguments arity mismatch
+        let type_p = TypeInfo {
+            name: "P".into(),
+            parameters: vec![crate::parser::ast::Parameter::new(
+                "x".into(),
+                Some(TypeReference::new("Number".into(), Span::default())),
+                Span::default(),
+            )],
+            parent: None,
+            methods: vec![],
+            properties: vec![],
+            implemented_protocols: vec![],
+            span: Span::default(),
+        };
+
+        env.register_type(type_p).unwrap();
+
+        let td3 = crate::parser::ast::TypeDeclaration {
+            name: "Q".into(),
+            parameters: vec![],
+            inherits: Some(TypeReference::new("P".into(), Span::default())),
+            parent_arguments: vec![], // missing one arg
+            members: vec![],
+        };
+
+        assert!(env.validate_type_declaration(&td3).is_err());
     }
 }

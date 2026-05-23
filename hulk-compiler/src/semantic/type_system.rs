@@ -141,7 +141,6 @@ impl TypeEnvironment {
                     type_info.name, parent_name
                 ));
             }
-
             if parent_name == &type_info.name {
                 return Err(format!(
                     "Type '{}' cannot inherit from itself",
@@ -149,23 +148,51 @@ impl TypeEnvironment {
                 ));
             }
 
-            if !self.has_type(parent_name) {
+            // Parent must be a known type (not a protocol)
+            if self.protocols.contains_key(parent_name) {
+                return Err(format!(
+                    "Type '{}' cannot inherit from protocol '{}'",
+                    type_info.name, parent_name
+                ));
+            }
+
+            if !self.user_types.contains_key(parent_name) {
                 return Err(format!(
                     "Parent type '{}' for '{}' not found",
                     parent_name, type_info.name
                 ));
             }
 
-            // Detect simple cycles: walk up the parent chain and ensure we don't encounter the new type name
-            let mut cur = parent_name.clone();
-            while let Some(next_parent) = self.get_parent_type(&cur) {
-                if next_parent == type_info.name {
-                    return Err(format!(
-                        "Inheritance cycle detected involving '{}' and '{}'",
-                        type_info.name, cur
-                    ));
+            // Detect cycles using DFS on the parent chain: if `parent_name` can reach `type_info.name`, it's a cycle
+            fn reaches_target(
+                types: &HashMap<String, TypeInfo>,
+                start: &str,
+                target: &str,
+                visited: &mut std::collections::HashSet<String>,
+            ) -> bool {
+                if start == target {
+                    return true;
                 }
-                cur = next_parent;
+                if visited.contains(start) {
+                    return false;
+                }
+                visited.insert(start.to_string());
+                if let Some(t) = types.get(start) {
+                    if let Some(parent) = &t.parent {
+                        if reaches_target(types, parent, target, visited) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+
+            let mut visited = std::collections::HashSet::new();
+            if reaches_target(&self.user_types, parent_name, &type_info.name, &mut visited) {
+                return Err(format!(
+                    "Inheritance cycle detected involving '{}' and '{}'",
+                    type_info.name, parent_name
+                ));
             }
         }
 
@@ -727,6 +754,31 @@ mod tests {
             };
 
             assert!(env.register_protocol(proto).is_err());
+        }
+
+        #[test]
+        fn test_register_type_parent_is_protocol() {
+            let mut env = TypeEnvironment::new();
+
+            let proto = ProtocolInfo {
+                name: "PProto".into(),
+                members: vec![],
+                extends: vec![],
+                span: Span::default(),
+            };
+            env.register_protocol(proto).unwrap();
+
+            let t = TypeInfo {
+                name: "T".into(),
+                parameters: vec![],
+                parent: Some("PProto".into()),
+                methods: vec![],
+                properties: vec![],
+                implemented_protocols: vec![],
+                span: Span::default(),
+            };
+
+            assert!(env.register_type(t).is_err());
         }
         let type_b = TypeInfo {
             name: "B".into(),

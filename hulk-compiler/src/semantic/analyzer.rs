@@ -15,10 +15,10 @@
 // =============================================================================
 
 use crate::parser::ast::Program;
-use crate::utils::errors::semantic::SemanticError;
 use crate::semantic::expression_checker::ExpressionChecker;
 use crate::semantic::symbol_table::SymbolTable;
 use crate::semantic::type_system::TypeEnvironment;
+use crate::utils::errors::semantic::SemanticError;
 
 type SemanticResult<T> = Result<T, SemanticError>;
 
@@ -150,10 +150,7 @@ impl SemanticAnalyzer {
     }
 
     /// Reporta un error
-    pub fn report_error(
-        &mut self,
-        error: SemanticError,
-    ) {
+    pub fn report_error(&mut self, error: SemanticError) {
         self.context.push_error(error);
     }
 }
@@ -163,50 +160,4 @@ impl Default for SemanticAnalyzer {
         Self::new()
     }
 }
-
-// =============================================================================
-// Tests (Líder)
-// =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::utils::errors::span::Span;
-
-    #[test]
-    fn test_semantic_analyzer_new() {
-        let analyzer = SemanticAnalyzer::new();
-        assert!(!analyzer.has_errors());
-    }
-
-    #[test]
-    fn test_semantic_context_new() {
-        let ctx = SemanticContext::new();
-        assert!(!ctx.has_errors());
-    }
-
-    #[test]
-    fn test_context_push_error() {
-        let mut ctx = SemanticContext::new();
-        let _span = Span::default();
-        let error = SemanticError::UnsupportedFeature {
-            feature: "Test error".to_string(),
-        };
-        ctx.push_error(error);
-        assert!(ctx.has_errors());
-        assert_eq!(ctx.get_errors().len(), 1);
-    }
-
-    #[test]
-    fn test_context_clear_errors() {
-        let mut ctx = SemanticContext::new();
-        let _span = Span::default();
-        let error = SemanticError::UnsupportedFeature {
-            feature: "Test error".to_string(),
-        };
-        ctx.push_error(error);
-        assert!(ctx.has_errors());
-        ctx.clear_errors();
-        assert!(!ctx.has_errors());
-    }
-}
+// tests moved to consolidated `tests.rs`

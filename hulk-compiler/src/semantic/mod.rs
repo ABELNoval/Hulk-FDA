@@ -32,7 +32,7 @@ pub mod symbol_table;
 pub mod type_system;
 
 #[cfg(test)]
-mod test_symbol_table;
+mod tests;
 
 #[allow(unused_imports)]
 pub use analyzer::{SemanticAnalyzer, SemanticContext};

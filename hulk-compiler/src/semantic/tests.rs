@@ -512,3 +512,114 @@ fn test_context_push_and_clear_error() {
 mod tests {
     // Los tests unitarios del Semantic irán aquí
 }
+
+// Additional tests for inheritance and protocol edge-cases
+#[test]
+fn test_register_type_inherit_from_undeclared() {
+    let mut env = TypeEnvironment::new();
+    let t = TypeInfo {
+        name: "X".into(),
+        parameters: vec![],
+        parent: Some("Missing".into()),
+        methods: vec![],
+        properties: vec![],
+        implemented_protocols: vec![],
+        span: Span::default(),
+    };
+
+    let res = env.register_type(t);
+    assert!(matches!(
+        res,
+        Err(SemanticError::InheritFromUndeclared { .. })
+    ));
+}
+
+#[test]
+fn test_register_type_self_inherit() {
+    let mut env = TypeEnvironment::new();
+    let t = TypeInfo {
+        name: "Selfy".into(),
+        parameters: vec![],
+        parent: Some("Selfy".into()),
+        methods: vec![],
+        properties: vec![],
+        implemented_protocols: vec![],
+        span: Span::default(),
+    };
+
+    let res = env.register_type(t);
+    assert!(matches!(
+        res,
+        Err(SemanticError::CircularInheritance { .. })
+    ));
+}
+
+#[test]
+fn test_register_protocol_extends_undeclared() {
+    let mut env = TypeEnvironment::new();
+    let p = ProtocolInfo {
+        name: "P3".into(),
+        members: vec![],
+        extends: vec!["UnknownProto".into()],
+        span: Span::default(),
+    };
+
+    let res = env.register_protocol(p);
+    assert!(matches!(res, Err(SemanticError::UndeclaredType { .. })));
+}
+
+#[test]
+fn test_protocol_conformance_inherited_method() {
+    let mut env = TypeEnvironment::new();
+
+    // Parent with method m()
+    let parent_func = FunctionDeclaration {
+        name: "m".into(),
+        parameters: vec![],
+        return_type: Some(TypeReference::new("Number".into(), Span::default())),
+        body: Expr::literal(Literal::Number(0.0), Span::default()),
+    };
+
+    let parent = TypeInfo {
+        name: "Parent".into(),
+        parameters: vec![],
+        parent: None,
+        methods: vec![parent_func],
+        properties: vec![],
+        implemented_protocols: vec![],
+        span: Span::default(),
+    };
+
+    env.register_type(parent).unwrap();
+
+    let child = TypeInfo {
+        name: "Child".into(),
+        parameters: vec![],
+        parent: Some("Parent".into()),
+        methods: vec![],
+        properties: vec![],
+        implemented_protocols: vec![],
+        span: Span::default(),
+    };
+
+    env.register_type(child).unwrap();
+
+    // Protocol requiring m() -> Number
+    let proto_sig = ProtocolMethodSignature {
+        name: "m".into(),
+        parameters: vec![],
+        return_type: TypeReference::new("Number".into(), Span::default()),
+        span: Span::default(),
+    };
+
+    let proto = ProtocolInfo {
+        name: "PChild".into(),
+        members: vec![proto_sig],
+        extends: vec![],
+        span: Span::default(),
+    };
+
+    env.register_protocol(proto).unwrap();
+
+    assert!(env.type_conforms_to_protocol("Child", "PChild"));
+}

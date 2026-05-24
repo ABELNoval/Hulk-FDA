@@ -403,9 +403,17 @@ impl ExpressionChecker {
         body_type: &NormalizedType,
         _span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        // TODO: Validar si _iterable_type implementa protocolo Iterable
-
-        Ok(ExpressionType::value(body_type.clone()))
+        match _iterable_type {
+            NormalizedType::Iterable(_) | NormalizedType::Vector(_) => {
+                Ok(ExpressionType::value(body_type.clone()))
+            }
+            NormalizedType::Unknown => Ok(ExpressionType::value(body_type.clone())),
+            other => Err(SemanticError::InvalidOperandType {
+                expected: "iterable".to_string(),
+                found: other.to_string(),
+                context: "for".to_string(),
+            }),
+        }
     }
 
     /// Verifica tipo de una expresión let (declaración de variable)

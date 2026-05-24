@@ -389,6 +389,83 @@ fn test_is_compatible_subtype() {
     assert!(!env.is_compatible(&t_a, &t_b));
 }
 
+#[test]
+fn test_protocol_conformance_positive() {
+    let mut env = TypeEnvironment::new();
+
+    let proto_sig = ProtocolMethodSignature {
+        name: "m".into(),
+        parameters: vec![],
+        return_type: TypeReference::new("Number".into(), Span::default()),
+        span: Span::default(),
+    };
+
+    let proto = ProtocolInfo {
+        name: "P".into(),
+        members: vec![proto_sig],
+        extends: vec![],
+        span: Span::default(),
+    };
+
+    env.register_protocol(proto).unwrap();
+
+    let func = FunctionDeclaration {
+        name: "m".into(),
+        parameters: vec![],
+        return_type: Some(TypeReference::new("Number".into(), Span::default())),
+        body: Expr::literal(Literal::Number(0.0), Span::default()),
+    };
+
+    let type_a = TypeInfo {
+        name: "A".into(),
+        parameters: vec![],
+        parent: None,
+        methods: vec![func],
+        properties: vec![],
+        implemented_protocols: vec![],
+        span: Span::default(),
+    };
+
+    env.register_type(type_a).unwrap();
+
+    assert!(env.type_conforms_to_protocol("A", "P"));
+}
+
+#[test]
+fn test_protocol_conformance_negative_missing_method() {
+    let mut env = TypeEnvironment::new();
+
+    let proto_sig = ProtocolMethodSignature {
+        name: "m".into(),
+        parameters: vec![],
+        return_type: TypeReference::new("Number".into(), Span::default()),
+        span: Span::default(),
+    };
+
+    let proto = ProtocolInfo {
+        name: "P2".into(),
+        members: vec![proto_sig],
+        extends: vec![],
+        span: Span::default(),
+    };
+
+    env.register_protocol(proto).unwrap();
+
+    let type_b = TypeInfo {
+        name: "B".into(),
+        parameters: vec![],
+        parent: None,
+        methods: vec![],
+        properties: vec![],
+        implemented_protocols: vec![],
+        span: Span::default(),
+    };
+
+    env.register_type(type_b).unwrap();
+
+    assert!(!env.type_conforms_to_protocol("B", "P2"));
+}
+
 // ========= analyzer tests =========
 
 #[test]

@@ -13,8 +13,8 @@
 // =============================================================================
 
 use crate::parser::ast::{Parameter, TypeReference};
-use crate::utils::errors::span::Span;
 use crate::utils::errors::semantic::SemanticError;
+use crate::utils::errors::span::Span;
 use std::collections::HashMap;
 
 /// Información sobre un símbolo en la tabla
@@ -40,15 +40,9 @@ pub enum SymbolInfo {
         span: Span,
     },
     /// Declaración de tipo (type)
-    Type {
-        name: String,
-        span: Span,
-    },
+    Type { name: String, span: Span },
     /// Declaración de protocolo
-    Protocol {
-        name: String,
-        span: Span,
-    },
+    Protocol { name: String, span: Span },
 }
 
 impl SymbolInfo {
@@ -92,12 +86,10 @@ impl SymbolTable {
         }
     }
 
-    
     pub fn enter_scope(&mut self) {
         self.scopes.push(HashMap::new());
     }
 
-    
     pub fn exit_scope(&mut self) {
         if self.scopes.len() > 1 {
             self.scopes.pop();
@@ -106,13 +98,15 @@ impl SymbolTable {
         }
     }
 
-   
     pub fn scope_depth(&self) -> usize {
         self.scopes.len()
     }
 
     pub fn declare(&mut self, symbol: SymbolInfo) -> Result<(), SemanticError> {
-        let scope = self.scopes.last_mut().expect("At least global scope exists");
+        let scope = self
+            .scopes
+            .last_mut()
+            .expect("At least global scope exists");
 
         if let Some(existing) = scope.get(symbol.name()) {
             // Retornar error específico basado en el tipo de símbolo
@@ -182,7 +176,7 @@ impl SymbolTable {
     }
 
     /// Verifica si estamos en el scope global
-  
+
     pub fn is_global_scope(&self) -> bool {
         self.scope_depth() == 1
     }
@@ -197,7 +191,12 @@ impl SymbolTable {
     pub fn get_symbol_or_error(&self, name: &str) -> Result<SymbolInfo, SemanticError> {
         self.lookup(name).ok_or_else(|| {
             // Heurística: si empieza con mayúscula, probablemente sea un tipo/protocolo
-            if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            if name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
+            {
                 SemanticError::UndeclaredType {
                     name: name.to_string(),
                 }
@@ -211,16 +210,16 @@ impl SymbolTable {
     }
 
     /// Lista todos los símbolos desde el scope actual hacia el global (para debugging)
-    
+
     pub fn all_symbols_in_chain(&self) -> Vec<(usize, String, SymbolInfo)> {
         let mut result = Vec::new();
-        
+
         for (scope_idx, scope) in self.scopes.iter().enumerate().rev() {
             for (name, symbol) in scope {
                 result.push((scope_idx, name.clone(), symbol.clone()));
             }
         }
-        
+
         result
     }
 
@@ -348,15 +347,15 @@ impl SymbolTable {
                 SymbolInfo::Type { .. } => "type",
                 SymbolInfo::Protocol { .. } => "protocol",
             };
-            
+
             // Encontrar en qué scope está
             for (scope_idx, scope) in self.scopes.iter().enumerate().rev() {
                 if scope.contains_key(name) {
                     return (sym, scope_idx, kind);
                 }
             }
-            
-            (sym, 0, kind)  // Si no lo encuentra (no debería pasar), retorna scope 0
+
+            (sym, 0, kind) // Si no lo encuentra (no debería pasar), retorna scope 0
         })
     }
 
@@ -366,19 +365,17 @@ impl SymbolTable {
         let exists = self.is_symbol_declared(name);
         let is_local = self.lookup_local(name).is_some();
         let is_global = self.scopes.first().map_or(false, |g| g.contains_key(name));
-        
+
         (exists, is_local, is_global)
     }
 
     /// Obtiene la información de tipo de un símbolo (si la tiene)
     pub fn get_type_reference(&self, name: &str) -> Option<TypeReference> {
-        self.lookup(name).and_then(|sym| {
-            match sym {
-                SymbolInfo::Variable { type_ref, .. } => type_ref,
-                SymbolInfo::Parameter { type_ref, .. } => type_ref,
-                SymbolInfo::Function { return_type, .. } => return_type,
-                _ => None,
-            }
+        self.lookup(name).and_then(|sym| match sym {
+            SymbolInfo::Variable { type_ref, .. } => type_ref,
+            SymbolInfo::Parameter { type_ref, .. } => type_ref,
+            SymbolInfo::Function { return_type, .. } => return_type,
+            _ => None,
         })
     }
 
@@ -393,20 +390,97 @@ impl SymbolTable {
     }
 
     /// Declara los símbolos builtin globales (print, sqrt, sin, cos, log, exp, rand)
-  
+
     pub fn declare_builtins(&mut self) {
-        // TODO: Implementar declaración de builtins
-        // - print(value: ?)
-        // - sqrt(x: Number) -> Number
-        // - sin(x: Number) -> Number
-        // - cos(x: Number) -> Number
-        // - log(x: Number) -> Number
-        // - exp(x: Number) -> Number
-        // - rand() -> Number
-        //
-        // Y constantes:
-        // - PI: Number
-        // - E: Number
+        // Builtin functions
+        let span = Span::default();
+
+        // print(value: ?) -> Unknown (handled specially in checker)
+        let print_param = Parameter::new("value".into(), None, span.clone());
+        let print_fn = SymbolInfo::Function {
+            name: "print".into(),
+            parameters: vec![print_param],
+            return_type: None,
+            span: span.clone(),
+        };
+        self.scopes
+            .first_mut()
+            .expect("global scope")
+            .insert("print".into(), print_fn);
+
+        // sqrt/sin/cos/exp: (Number) -> Number
+        let num_param = Parameter::new(
+            "x".into(),
+            Some(TypeReference::new("Number".into(), span.clone())),
+            span.clone(),
+        );
+        for &name in &["sqrt", "sin", "cos", "exp"] {
+            let f = SymbolInfo::Function {
+                name: name.into(),
+                parameters: vec![num_param.clone()],
+                return_type: Some(TypeReference::new("Number".into(), span.clone())),
+                span: span.clone(),
+            };
+            self.scopes
+                .first_mut()
+                .expect("global scope")
+                .insert(name.into(), f);
+        }
+
+        // log(base: Number, value: Number) -> Number
+        let log_f = SymbolInfo::Function {
+            name: "log".into(),
+            parameters: vec![
+                Parameter::new(
+                    "base".into(),
+                    Some(TypeReference::new("Number".into(), span.clone())),
+                    span.clone(),
+                ),
+                Parameter::new(
+                    "value".into(),
+                    Some(TypeReference::new("Number".into(), span.clone())),
+                    span.clone(),
+                ),
+            ],
+            return_type: Some(TypeReference::new("Number".into(), span.clone())),
+            span: span.clone(),
+        };
+        self.scopes
+            .first_mut()
+            .expect("global scope")
+            .insert("log".into(), log_f);
+
+        // rand() -> Number
+        let rand_f = SymbolInfo::Function {
+            name: "rand".into(),
+            parameters: vec![],
+            return_type: Some(TypeReference::new("Number".into(), span.clone())),
+            span: span.clone(),
+        };
+        self.scopes
+            .first_mut()
+            .expect("global scope")
+            .insert("rand".into(), rand_f);
+
+        // Constants PI and E
+        let pi = SymbolInfo::Variable {
+            name: "PI".into(),
+            type_ref: Some(TypeReference::new("Number".into(), span.clone())),
+            span: span.clone(),
+        };
+        let e = SymbolInfo::Variable {
+            name: "E".into(),
+            type_ref: Some(TypeReference::new("Number".into(), span.clone())),
+            span: span.clone(),
+        };
+        self.scopes
+            .first_mut()
+            .expect("global scope")
+            .insert("PI".into(), pi);
+        self.scopes
+            .first_mut()
+            .expect("global scope")
+            .insert("E".into(), e);
     }
 }
 

@@ -65,6 +65,16 @@ pub enum SemanticError {
         right_type: String,
     },
 
+    /// Tipo de operando inválido en un contexto específico
+    InvalidOperandType {
+        expected: String,
+        found: String,
+        context: String,
+    },
+
+    /// Target de evaluación que no es válido (ej. asignación a rvalue)
+    InvalidTarget { context: String },
+
     // ==================== ERRORES DE FUNCIONES ====================
     /// Función no declarada
     /// Ejemplo: foo();  // foo no existe
@@ -222,6 +232,9 @@ pub enum SemanticError {
     /// Expresión constante requerida pero no proporcionada
     NonConstantExpression { context: String },
 
+    /// Expresión no soportada
+    UnsupportedExpression { expression_type: String },
+
     /// Característica del lenguaje no soportada
     UnsupportedFeature { feature: String },
 }
@@ -243,6 +256,8 @@ impl DisplayError for SemanticError {
             SemanticError::CannotInferType { .. } => "E2013",
             SemanticError::UndeclaredType { .. } => "E2014",
             SemanticError::IncomparableTypes { .. } => "E2015",
+            SemanticError::InvalidOperandType { .. } => "E2016",
+            SemanticError::InvalidTarget { .. } => "E2017",
             // Funciones
             SemanticError::UndeclaredFunction { .. } => "E2020",
             SemanticError::FunctionAlreadyDeclared { .. } => "E2021",
@@ -280,6 +295,7 @@ impl DisplayError for SemanticError {
             // Otros
             SemanticError::CyclicDefinition { .. } => "E2080",
             SemanticError::NonConstantExpression { .. } => "E2081",
+            SemanticError::UnsupportedExpression { .. } => "E2082",
             SemanticError::UnsupportedFeature { .. } => "E2099",
         }
     }
@@ -354,6 +370,15 @@ impl DisplayError for SemanticError {
                     "no se pueden comparar valores de tipo '{}' y '{}'",
                     left_type, right_type
                 )
+            }
+            SemanticError::InvalidOperandType { expected, found, context } => {
+                format!(
+                    "tipo de operando inválido en {}: esperaba '{}', se encontró '{}'",
+                    context, expected, found
+                )
+            }
+            SemanticError::InvalidTarget { context } => {
+                format!("target no válido para {}", context)
             }
             // Funciones
             SemanticError::UndeclaredFunction { name } => {
@@ -553,6 +578,9 @@ impl DisplayError for SemanticError {
             }
             SemanticError::NonConstantExpression { context } => {
                 format!("se requiere una expresión constante en {}", context)
+            }
+            SemanticError::UnsupportedExpression { expression_type } => {
+                format!("tipo de expresión no soportada: {}", expression_type)
             }
             SemanticError::UnsupportedFeature { feature } => {
                 format!("característica no soportada: {}", feature)

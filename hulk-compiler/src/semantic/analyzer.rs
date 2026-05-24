@@ -418,6 +418,70 @@ impl SemanticAnalyzer {
                     }
                 }
             }
+            ExprKind::TypeCheck {
+                expr: inner,
+                type_ref,
+            } => {
+                let expr_t = self.analyze_expr(inner)?;
+                match self.context.types.validate_type_reference(type_ref) {
+                    Ok(target_t) => match self
+                        .context
+                        .expression_checker
+                        .check_is(&expr_t, &target_t, &expr.span)
+                    {
+                        Ok(et) => Ok(et.type_),
+                        Err(e) => {
+                            self.report_error(e.clone());
+                            Ok(NormalizedType::Unknown)
+                        }
+                    },
+                    Err(e) => {
+                        self.report_error(e.clone());
+                        Ok(NormalizedType::Unknown)
+                    }
+                }
+            }
+            ExprKind::TypeCast {
+                expr: inner,
+                type_ref,
+            } => {
+                let expr_t = self.analyze_expr(inner)?;
+                match self.context.types.validate_type_reference(type_ref) {
+                    Ok(target_t) => {
+                        // Allow cast if same type, unknowns, or types are compatible in either direction
+                        if expr_t == target_t
+                            || expr_t == NormalizedType::Unknown
+                            || target_t == NormalizedType::Unknown
+                            || self.context.types.is_compatible(&expr_t, &target_t)
+                            || self.context.types.is_compatible(&target_t, &expr_t)
+                        {
+                            match self
+                                .context
+                                .expression_checker
+                                .check_as(&expr_t, &target_t, &expr.span)
+                            {
+                                Ok(et) => Ok(et.type_),
+                                Err(e) => {
+                                    self.report_error(e.clone());
+                                    Ok(NormalizedType::Unknown)
+                                }
+                            }
+                        } else {
+                            // Not compatible cast
+                            self.report_error(SemanticError::TypeMismatch {
+                                expected: target_t.to_string(),
+                                found: expr_t.to_string(),
+                                context: "cast".to_string(),
+                            });
+                            Ok(target_t)
+                        }
+                    }
+                    Err(e) => {
+                        self.report_error(e.clone());
+                        Ok(NormalizedType::Unknown)
+                    }
+                }
+            }
             _ => Ok(NormalizedType::Unknown),
         }
     }

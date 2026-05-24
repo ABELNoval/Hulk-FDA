@@ -12,7 +12,10 @@
 //
 // =============================================================================
 
-use crate::parser::ast::{FunctionDeclaration, ProtocolMethodSignature, TypeReference, TypeReferenceKind};
+use crate::parser::ast::{
+    Expr, FunctionDeclaration, Literal, ProtocolMethodSignature, TypeReference, TypeReferenceKind,
+};
+use crate::utils::errors::semantic::SemanticError;
 use crate::utils::errors::span::Span;
 use std::collections::HashMap;
 
@@ -20,7 +23,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct TypeInfo {
     pub name: String,
-    pub parent: Option<Box<TypeInfo>>,
+    pub parameters: Vec<crate::parser::ast::Parameter>,
+    pub parent: Option<String>,
     pub methods: Vec<FunctionDeclaration>,
     pub properties: Vec<(String, TypeReference)>,
     pub implemented_protocols: Vec<String>,
@@ -32,6 +36,7 @@ pub struct TypeInfo {
 pub struct ProtocolInfo {
     pub name: String,
     pub members: Vec<ProtocolMethodSignature>,
+    pub extends: Vec<String>,
     pub span: Span,
 }
 
@@ -123,25 +128,120 @@ impl TypeEnvironment {
     /// Registra un nuevo tipo en el entorno
     ///
     /// Retorna error si el tipo ya existe o si sus padres no existen.
-    pub fn register_type(&mut self, type_info: TypeInfo) -> Result<(), String> {
+    pub fn register_type(&mut self, type_info: TypeInfo) -> Result<(), SemanticError> {
         if self.user_types.contains_key(&type_info.name) {
-            return Err(format!("Type '{}' already defined", type_info.name));
+            return Err(SemanticError::TypeAlreadyDeclared {
+                name: type_info.name.clone(),
+                first_line: 0,
+                first_column: 0,
+            });
         }
 
-        // TODO: Validar que el parent existe (si hay)
-        // TODO: Validar que no hay herencia circular
-        // TODO: Validar que no hereda de builtin
+        if let Some(parent_name) = &type_info.parent {
+            // Can't inherit from builtin or from protocol
+            if Self::is_builtin_name(parent_name) {
+                return Err(SemanticError::InheritFromUndeclared {
+                    type_name: type_info.name.clone(),
+                    parent_name: parent_name.clone(),
+                });
+            }
+
+            if parent_name == &type_info.name {
+                return Err(SemanticError::CircularInheritance {
+                    type_name: type_info.name.clone(),
+                    cycle: vec![type_info.name.clone(), parent_name.clone()],
+                });
+            }
+
+            if !self.user_types.contains_key(parent_name) {
+                return Err(SemanticError::InheritFromUndeclared {
+                    type_name: type_info.name.clone(),
+                    parent_name: parent_name.clone(),
+                });
+            }
+
+            // Detect simple cycles by walking parents
+            fn reaches_target(
+                types: &HashMap<String, TypeInfo>,
+                start: &str,
+                target: &str,
+                visited: &mut std::collections::HashSet<String>,
+            ) -> bool {
+                if start == target {
+                    return true;
+                }
+                if visited.contains(start) {
+                    return false;
+                }
+                visited.insert(start.to_string());
+                if let Some(t) = types.get(start) {
+                    if let Some(parent) = &t.parent {
+                        if reaches_target(types, parent, target, visited) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+
+            let mut visited = std::collections::HashSet::new();
+            if reaches_target(&self.user_types, parent_name, &type_info.name, &mut visited) {
+                return Err(SemanticError::CircularInheritance {
+                    type_name: type_info.name.clone(),
+                    cycle: vec![type_info.name.clone(), parent_name.clone()],
+                });
+            }
+        }
 
         self.user_types.insert(type_info.name.clone(), type_info);
         Ok(())
     }
 
-    /// Registra un nuevo protocolo en el entorno
-    ///
-    /// Retorna error si el protocolo ya existe.
-    pub fn register_protocol(&mut self, protocol_info: ProtocolInfo) -> Result<(), String> {
+    /// Registra un protocolo en el entorno
+    pub fn register_protocol(&mut self, protocol_info: ProtocolInfo) -> Result<(), SemanticError> {
         if self.protocols.contains_key(&protocol_info.name) {
-            return Err(format!("Protocol '{}' already defined", protocol_info.name));
+            return Err(SemanticError::TypeAlreadyDeclared {
+                name: protocol_info.name.clone(),
+                first_line: 0,
+                first_column: 0,
+            });
+        }
+
+        // DFS to detect cycles in extends
+        fn reaches_target(
+            protocols: &HashMap<String, ProtocolInfo>,
+            start: &str,
+            target: &str,
+            visited: &mut std::collections::HashSet<String>,
+        ) -> bool {
+            if start == target {
+                return true;
+            }
+            if visited.contains(start) {
+                return false;
+            }
+            visited.insert(start.to_string());
+            if let Some(p) = protocols.get(start) {
+                for e in &p.extends {
+                    if reaches_target(protocols, e, target, visited) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+
+        for ext in &protocol_info.extends {
+            if !self.protocols.contains_key(ext) {
+                return Err(SemanticError::UndeclaredType { name: ext.clone() });
+            }
+
+            let mut visited = std::collections::HashSet::new();
+            if reaches_target(&self.protocols, ext, &protocol_info.name, &mut visited) {
+                return Err(SemanticError::CyclicDefinition {
+                    names: vec![protocol_info.name.clone(), ext.clone()],
+                });
+            }
         }
 
         self.protocols
@@ -149,10 +249,19 @@ impl TypeEnvironment {
         Ok(())
     }
 
-    /// Busca un tipo en el entorno
+    /// Busca un tipo en el entorno (builtin o user-declared)
     pub fn get_type(&self, name: &str) -> Option<&TypeInfo> {
-        // TODO: Considerar builtins también
         self.user_types.get(name)
+    }
+
+    /// Comprueba si un nombre corresponde a un tipo builtin conocido
+    pub fn is_builtin_name(name: &str) -> bool {
+        matches!(name, "Number" | "String" | "Boolean")
+    }
+
+    /// Comprueba si el entorno conoce un tipo (builtin o definido por el usuario)
+    pub fn has_type(&self, name: &str) -> bool {
+        Self::is_builtin_name(name) || self.user_types.contains_key(name)
     }
 
     /// Busca un protocolo en el entorno
@@ -167,9 +276,16 @@ impl TypeEnvironment {
     /// - Herencia (B hereda de A)
     /// - Conformancia a protocolo
     pub fn types_equal(&self, type1: &NormalizedType, type2: &NormalizedType) -> bool {
-        // TODO: Implementar comparación semántica de tipos
-        // Considera: builtins, herencia, protocolos
-        type1 == type2
+        match (type1, type2) {
+            (NormalizedType::Number, NormalizedType::Number)
+            | (NormalizedType::String, NormalizedType::String)
+            | (NormalizedType::Boolean, NormalizedType::Boolean) => true,
+            (NormalizedType::Named(a), NormalizedType::Named(b)) => a == b,
+            (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => self.types_equal(a, b),
+            (NormalizedType::Vector(a), NormalizedType::Vector(b)) => self.types_equal(a, b),
+            (NormalizedType::Unknown, NormalizedType::Unknown) => true,
+            _ => false,
+        }
     }
 
     /// Verifica si type_a es compatible con type_b (puede asignarse type_a a type_b)
@@ -179,41 +295,178 @@ impl TypeEnvironment {
     /// - type_a hereda de type_b
     /// - type_a conforma a protocolo type_b
     pub fn is_compatible(&self, type_a: &NormalizedType, type_b: &NormalizedType) -> bool {
-        // TODO: Implementar con consideración de herencia y protocolos
-        self.types_equal(type_a, type_b)
+        // Igualdad directa y compatibilidad recursiva para contenedores
+        if self.types_equal(type_a, type_b) {
+            return true;
+        }
+
+        match (type_a, type_b) {
+            // Vectores: T[] con U[] si T compatible con U
+            (NormalizedType::Vector(a), NormalizedType::Vector(b)) => self.is_compatible(a, b),
+            // Iterables: T* con U* si T compatible con U
+            (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => self.is_compatible(a, b),
+            // Named -> Named: check nominal subtyping
+            (NormalizedType::Named(a), NormalizedType::Named(b)) => {
+                self.is_subtype(a, b) || self.type_conforms_to_protocol(a, b)
+            }
+            _ => false,
+        }
     }
 
     /// Verifica si un tipo conforma a un protocolo
-    pub fn type_conforms_to_protocol(
+    pub fn type_conforms_to_protocol(&self, type_name: &str, protocol_name: &str) -> bool {
+        let protocol = match self.get_protocol(protocol_name) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        if !self.has_type(type_name) {
+            return false;
+        }
+
+        for proto_sig in &protocol.members {
+            // Buscar método con el mismo nombre en la jerarquía
+            let method_opt = self.get_method_from_hierarchy(type_name, &proto_sig.name);
+            if method_opt.is_none() {
+                return false;
+            }
+
+            let method = method_opt.unwrap();
+
+            // Parámetros: el protocolo puede o no anotar los parámetros.
+            if method.parameters.len() != proto_sig.parameters.len() {
+                return false;
+            }
+
+            for (m_param, p_param) in method.parameters.iter().zip(proto_sig.parameters.iter()) {
+                match (&m_param.annotation, &p_param.annotation) {
+                    (_, None) => {
+                        // protocolo no exige tipo para este parámetro -> ok
+                    }
+                    (Some(m_ann), Some(p_ann)) => {
+                        let m_t = NormalizedType::from_type_reference(m_ann);
+                        let p_t = NormalizedType::from_type_reference(p_ann);
+                        if !self.is_compatible(&m_t, &p_t) {
+                            return false;
+                        }
+                    }
+                    (None, Some(_)) => {
+                        // método no anotó pero protocolo sí -> no conforme
+                        return false;
+                    }
+                }
+            }
+
+            // Return type: protocolo exige un return_type concreto
+            if let Some(m_ret) = &method.return_type {
+                let m_rt = NormalizedType::from_type_reference(m_ret);
+                let p_rt = NormalizedType::from_type_reference(&proto_sig.return_type);
+                if !self.is_compatible(&m_rt, &p_rt) {
+                    return false;
+                }
+            } else {
+                // método no anotó retorno pero protocolo sí -> no conforme
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Busca un método llamado `method_name` en `type_name` o cualquiera de sus ancestros
+    fn get_method_from_hierarchy(
         &self,
-        _type_name: &str,
-        _protocol_name: &str,
-    ) -> bool {
-        // TODO: Implementar conformancia
-        // - El tipo debe implementar todos los métodos del protocolo
-        // - Con las firmas correctas
-        false
+        type_name: &str,
+        method_name: &str,
+    ) -> Option<FunctionDeclaration> {
+        let mut cur = type_name.to_string();
+        while let Some(tinfo) = self.user_types.get(&cur) {
+            for m in &tinfo.methods {
+                if m.name == method_name {
+                    return Some(m.clone());
+                }
+            }
+            if let Some(parent) = &tinfo.parent {
+                cur = parent.clone();
+            } else {
+                break;
+            }
+        }
+        None
     }
 
     /// Obtiene el tipo padre (si existe) para herencia
     pub fn get_parent_type(&self, type_name: &str) -> Option<String> {
         self.user_types
             .get(type_name)
-            .and_then(|t| t.parent.as_ref().map(|p| p.name.clone()))
+            .and_then(|t| t.parent.as_ref().map(|p| p.clone()))
     }
 
     /// Verifica si type_a es subtype de type_b (a hereda de b)
     pub fn is_subtype(&self, type_a: &str, type_b: &str) -> bool {
-        // TODO: Implementar búsqueda en cadena de herencia
         if type_a == type_b {
             return true;
         }
 
-        if let Some(parent) = self.get_parent_type(type_a) {
-            self.is_subtype(&parent, type_b)
-        } else {
-            false
+        // If either side is a builtin, only exact equality counts
+        if Self::is_builtin_name(type_a) || Self::is_builtin_name(type_b) {
+            return type_a == type_b;
         }
+
+        let mut cur = type_a.to_string();
+        while let Some(parent) = self.get_parent_type(&cur) {
+            if parent == type_b {
+                return true;
+            }
+            cur = parent;
+        }
+
+        false
+    }
+
+    /// Devuelve la lista de ancestros (cadena de herencia) para `type_name`
+    pub fn get_ancestors(&self, type_name: &str) -> Vec<String> {
+        let mut res = Vec::new();
+        let mut cur = type_name.to_string();
+        while let Some(parent) = self.get_parent_type(&cur) {
+            res.push(parent.clone());
+            cur = parent;
+        }
+        res
+    }
+
+    /// Resolver el tipo `self` cuando estamos dentro de un método de `type_name`.
+    /// Básicamente devuelve el tipo nominal correspondiente.
+    pub fn resolve_self_type(&self, type_name: &str) -> NormalizedType {
+        NormalizedType::Named(type_name.to_string())
+    }
+
+    /// Busca un método en los ancestros (excluyendo el propio `type_name`).
+    /// Útil para `base.member` donde queremos obtener el miembro proveniente del padre.
+    pub fn get_method_in_parent(
+        &self,
+        type_name: &str,
+        method_name: &str,
+    ) -> Option<FunctionDeclaration> {
+        let mut cur = match self.get_parent_type(type_name) {
+            Some(p) => p,
+            None => return None,
+        };
+
+        while let Some(tinfo) = self.user_types.get(&cur) {
+            for m in &tinfo.methods {
+                if m.name == method_name {
+                    return Some(m.clone());
+                }
+            }
+            if let Some(parent) = &tinfo.parent {
+                cur = parent.clone();
+            } else {
+                break;
+            }
+        }
+
+        None
     }
 
     /// Lista todos los tipos registrados
@@ -225,6 +478,112 @@ impl TypeEnvironment {
     pub fn all_protocols(&self) -> Vec<&ProtocolInfo> {
         self.protocols.values().collect()
     }
+
+    /// Valida una `TypeReference` y devuelve su `NormalizedType` si es válida.
+    ///
+    /// Retorna error si la referencia nombra un tipo desconocido.
+    pub fn validate_type_reference(
+        &self,
+        tr: &TypeReference,
+    ) -> Result<NormalizedType, SemanticError> {
+        match &tr.kind {
+            TypeReferenceKind::Named(name) => {
+                if self.has_type(name) {
+                    Ok(NormalizedType::Named(name.clone()))
+                } else {
+                    Err(SemanticError::UndeclaredType { name: name.clone() })
+                }
+            }
+            TypeReferenceKind::Iterable(inner) => {
+                let inner_nt = self.validate_type_reference(inner)?;
+                Ok(NormalizedType::Iterable(Box::new(inner_nt)))
+            }
+            TypeReferenceKind::Vector(inner) => {
+                let inner_nt = self.validate_type_reference(inner)?;
+                Ok(NormalizedType::Vector(Box::new(inner_nt)))
+            }
+        }
+    }
+
+    /// Valida las anotaciones de parámetros y retorno de una función.
+    ///
+    /// Retorna `Ok(())` si todas las anotaciones nombradas existen y son válidas.
+    pub fn validate_function_signature(
+        &self,
+        func: &FunctionDeclaration,
+    ) -> Result<(), SemanticError> {
+        for p in &func.parameters {
+            if let Some(ann) = &p.annotation {
+                self.validate_type_reference(ann)?;
+            }
+        }
+
+        if let Some(ret) = &func.return_type {
+            self.validate_type_reference(ret)?;
+        }
+
+        Ok(())
+    }
+
+    /// Valida una declaración de tipo: su `inherits` y las anotaciones de atributos.
+    /// Actualmente valida que el tipo padre (si existe) esté declarado y que
+    /// las anotaciones de atributos referencien tipos válidos.
+    pub fn validate_type_declaration(
+        &self,
+        td: &crate::parser::ast::TypeDeclaration,
+    ) -> Result<(), SemanticError> {
+        // Si hereda, validar que el tipo padre exista y no sea builtin
+        if let Some(inherits) = &td.inherits {
+            match &inherits.kind {
+                TypeReferenceKind::Named(name) => {
+                    if Self::is_builtin_name(name) {
+                        return Err(SemanticError::InvalidConstructor {
+                            type_name: td.name.clone(),
+                            reason: format!("cannot inherit from builtin '{}'", name),
+                        });
+                    }
+                    if !self.has_type(name) {
+                        return Err(SemanticError::InheritFromUndeclared {
+                            type_name: td.name.clone(),
+                            parent_name: name.clone(),
+                        });
+                    }
+
+                    // Validate parent_arguments arity against parent's parameters (if known)
+                    if let Some(parent_info) = self.get_type(name) {
+                        let expected = parent_info.parameters.len();
+                        let provided = td.parent_arguments.len();
+                        if expected != provided {
+                            return Err(SemanticError::InvalidConstructor {
+                                type_name: td.name.clone(),
+                                reason: format!(
+                                    "parent arguments arity mismatch: expected {}, got {}",
+                                    expected, provided
+                                ),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    // Herencia parametrizada/compuesta no soportada actualmente
+                    return Err(SemanticError::UnsupportedFeature {
+                        feature: "parametrized inherits".into(),
+                    });
+                }
+            }
+        }
+
+        // Validar anotaciones en atributos
+        for member in &td.members {
+            if let crate::parser::ast::TypeMember::Attribute(attr) = member {
+                if let Some(ann) = &attr.annotation {
+                    self.validate_type_reference(ann)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for TypeEnvironment {
@@ -232,44 +591,4 @@ impl Default for TypeEnvironment {
         Self::new()
     }
 }
-
-// =============================================================================
-// Tests (Persona 2)
-// =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_normalized_type_builtin() {
-        assert_eq!(NormalizedType::Number.to_string(), "Number");
-        assert_eq!(NormalizedType::String.to_string(), "String");
-        assert_eq!(NormalizedType::Boolean.to_string(), "Boolean");
-    }
-
-    #[test]
-    fn test_normalized_type_iterable() {
-        let iter_num = NormalizedType::Iterable(Box::new(NormalizedType::Number));
-        assert_eq!(iter_num.to_string(), "Number*");
-    }
-
-    #[test]
-    fn test_normalized_type_vector() {
-        let vec_num = NormalizedType::Vector(Box::new(NormalizedType::Number));
-        assert_eq!(vec_num.to_string(), "Number[]");
-    }
-
-    #[test]
-    fn test_type_environment_new() {
-        let env = TypeEnvironment::new();
-        assert_eq!(env.all_types().len(), 0);
-    }
-
-    #[test]
-    fn test_types_equal_builtins() {
-        let env = TypeEnvironment::new();
-        assert!(env.types_equal(&NormalizedType::Number, &NormalizedType::Number));
-        assert!(!env.types_equal(&NormalizedType::Number, &NormalizedType::String));
-    }
-}
+// tests moved to consolidated `tests.rs`

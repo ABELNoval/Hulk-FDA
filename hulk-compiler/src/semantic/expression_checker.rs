@@ -61,11 +61,15 @@ impl ExpressionChecker {
     /// - true/false: Boolean
     pub fn check_literal(&self, expr: &Expr) -> SemanticResult<ExpressionType> {
         match &expr.kind {
-            ExprKind::Literal(Literal::Number(_)) | ExprKind::Literal(Literal::Pi) | ExprKind::Literal(Literal::E) => {
-                Ok(ExpressionType::value(NormalizedType::Number))
+            ExprKind::Literal(Literal::Number(_))
+            | ExprKind::Literal(Literal::Pi)
+            | ExprKind::Literal(Literal::E) => Ok(ExpressionType::value(NormalizedType::Number)),
+            ExprKind::Literal(Literal::String(_)) => {
+                Ok(ExpressionType::value(NormalizedType::String))
             }
-            ExprKind::Literal(Literal::String(_)) => Ok(ExpressionType::value(NormalizedType::String)),
-            ExprKind::Literal(Literal::Boolean(_)) => Ok(ExpressionType::value(NormalizedType::Boolean)),
+            ExprKind::Literal(Literal::Boolean(_)) => {
+                Ok(ExpressionType::value(NormalizedType::Boolean))
+            }
             _ => Err(SemanticError::UnsupportedExpression {
                 expression_type: "expected literal expression".to_string(),
             }),
@@ -187,7 +191,7 @@ impl ExpressionChecker {
     }
 
     /// Verifica tipo de una expresión agrupada (parentesis)
-    /// 
+    ///
     /// Simplemente retorna el mismo tipo de la expresión interna
     pub fn check_grouping(&self, inner_type: &NormalizedType) -> SemanticResult<ExpressionType> {
         Ok(ExpressionType::value(inner_type.clone()))
@@ -227,7 +231,9 @@ impl ExpressionChecker {
                         found: argument_types.len(),
                     });
                 }
-                if argument_types[0] != NormalizedType::Number && argument_types[0] != NormalizedType::Unknown {
+                if argument_types[0] != NormalizedType::Number
+                    && argument_types[0] != NormalizedType::Unknown
+                {
                     return Err(SemanticError::ArgumentTypeMismatch {
                         function: function_name.to_string(),
                         parameter_name: "value".to_string(),
@@ -246,7 +252,9 @@ impl ExpressionChecker {
                         found: argument_types.len(),
                     });
                 }
-                if argument_types[0] != NormalizedType::Number && argument_types[0] != NormalizedType::Unknown {
+                if argument_types[0] != NormalizedType::Number
+                    && argument_types[0] != NormalizedType::Unknown
+                {
                     return Err(SemanticError::ArgumentTypeMismatch {
                         function: function_name.to_string(),
                         parameter_name: "base".to_string(),
@@ -255,7 +263,9 @@ impl ExpressionChecker {
                         found: argument_types[0].to_string(),
                     });
                 }
-                if argument_types[1] != NormalizedType::Number && argument_types[1] != NormalizedType::Unknown {
+                if argument_types[1] != NormalizedType::Number
+                    && argument_types[1] != NormalizedType::Unknown
+                {
                     return Err(SemanticError::ArgumentTypeMismatch {
                         function: function_name.to_string(),
                         parameter_name: "value".to_string(),
@@ -279,8 +289,13 @@ impl ExpressionChecker {
                 });
             }
 
-            for (i, (arg_type, (param_name, param_type))) in argument_types.iter().zip(params.iter()).enumerate() {
-                if arg_type != param_type && arg_type != &NormalizedType::Unknown && param_type != &NormalizedType::Unknown {
+            for (i, (arg_type, (param_name, param_type))) in
+                argument_types.iter().zip(params.iter()).enumerate()
+            {
+                if arg_type != param_type
+                    && arg_type != &NormalizedType::Unknown
+                    && param_type != &NormalizedType::Unknown
+                {
                     return Err(SemanticError::ArgumentTypeMismatch {
                         function: function_name.to_string(),
                         parameter_name: param_name.to_string(),
@@ -292,7 +307,9 @@ impl ExpressionChecker {
             }
         }
 
-        let ret_type = expected_return_type.cloned().unwrap_or(NormalizedType::Unknown);
+        let ret_type = expected_return_type
+            .cloned()
+            .unwrap_or(NormalizedType::Unknown);
         Ok(ExpressionType::value(ret_type))
     }
 
@@ -373,22 +390,30 @@ impl ExpressionChecker {
                 context: "while".to_string(),
             });
         }
-        
+
         Ok(ExpressionType::value(body_type.clone()))
     }
 
     /// Verifica tipo de una expresión for
     ///
-    /// - Evalúa la parte del iterable 
+    /// - Evalúa la parte del iterable
     pub fn check_for_expression(
         &self,
         _iterable_type: &NormalizedType,
         body_type: &NormalizedType,
         _span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        // TODO: Validar si _iterable_type implementa protocolo Iterable
-        
-        Ok(ExpressionType::value(body_type.clone()))
+        match _iterable_type {
+            NormalizedType::Iterable(_) | NormalizedType::Vector(_) => {
+                Ok(ExpressionType::value(body_type.clone()))
+            }
+            NormalizedType::Unknown => Ok(ExpressionType::value(body_type.clone())),
+            other => Err(SemanticError::InvalidOperandType {
+                expected: "iterable".to_string(),
+                found: other.to_string(),
+                context: "for".to_string(),
+            }),
+        }
     }
 
     /// Verifica tipo de una expresión let (declaración de variable)
@@ -415,7 +440,7 @@ impl ExpressionChecker {
             .or(value_type)
             .cloned()
             .unwrap_or(NormalizedType::Unknown);
-            
+
         Ok(ExpressionType::value(resulting_type))
     }
 
@@ -435,14 +460,17 @@ impl ExpressionChecker {
             });
         }
 
-        if target_type.type_ != *value_type && target_type.type_ != NormalizedType::Unknown && *value_type != NormalizedType::Unknown {
+        if target_type.type_ != *value_type
+            && target_type.type_ != NormalizedType::Unknown
+            && *value_type != NormalizedType::Unknown
+        {
             return Err(SemanticError::TypeMismatch {
                 expected: target_type.type_.to_string(),
                 found: value_type.to_string(),
                 context: "asignación".to_string(),
             });
         }
-        
+
         Ok(ExpressionType::value(value_type.clone()))
     }
 
@@ -461,12 +489,21 @@ impl ExpressionChecker {
             if argument_types.len() != params.len() {
                 return Err(SemanticError::InvalidConstructor {
                     type_name: type_name.to_string(),
-                    reason: format!("esperaba {} argumentos, recibió {}", params.len(), argument_types.len()),
+                    reason: format!(
+                        "esperaba {} argumentos, recibió {}",
+                        params.len(),
+                        argument_types.len()
+                    ),
                 });
             }
 
-            for (i, (arg_type, (param_name, param_type))) in argument_types.iter().zip(params.iter()).enumerate() {
-                if arg_type != param_type && arg_type != &NormalizedType::Unknown && param_type != &NormalizedType::Unknown {
+            for (i, (arg_type, (param_name, param_type))) in
+                argument_types.iter().zip(params.iter()).enumerate()
+            {
+                if arg_type != param_type
+                    && arg_type != &NormalizedType::Unknown
+                    && param_type != &NormalizedType::Unknown
+                {
                     return Err(SemanticError::ArgumentTypeMismatch {
                         function: type_name.to_string(),
                         parameter_name: param_name.to_string(),
@@ -567,7 +604,10 @@ impl ExpressionChecker {
 
         let first_type = &element_types[0];
         for (i, element_type) in element_types.iter().enumerate().skip(1) {
-            if element_type != first_type && *element_type != NormalizedType::Unknown && *first_type != NormalizedType::Unknown {
+            if element_type != first_type
+                && *element_type != NormalizedType::Unknown
+                && *first_type != NormalizedType::Unknown
+            {
                 return Err(SemanticError::InconsistentArrayTypes {
                     expected: first_type.to_string(),
                     found: element_type.to_string(),
@@ -599,428 +639,4 @@ impl Default for ExpressionChecker {
         Self::new()
     }
 }
-
-// =============================================================================
-// Tests (Persona 3)
-// =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_expression_type_value() {
-        let et = ExpressionType::value(NormalizedType::Number);
-        assert_eq!(et.type_, NormalizedType::Number);
-        assert!(!et.is_lvalue);
-    }
-
-    #[test]
-    fn test_expression_type_lvalue() {
-        let et = ExpressionType::lvalue(NormalizedType::String);
-        assert_eq!(et.type_, NormalizedType::String);
-        assert!(et.is_lvalue);
-    }
-
-    #[test]
-    fn test_checker_new() {
-        let _checker = ExpressionChecker::new();
-    }
-
-    #[test]
-    fn test_if_expression_valid() {
-        let checker = ExpressionChecker::new();
-        // if (Boolean) { Number } elif (Boolean) { Number } else { Number }
-        let elif_branches = vec![
-            (NormalizedType::Boolean, NormalizedType::Number),
-            (NormalizedType::Boolean, NormalizedType::Number)
-        ];
-        let result = checker.check_if_expression(
-            &NormalizedType::Boolean,
-            &NormalizedType::Number,
-            &elif_branches,
-            Some(&NormalizedType::Number),
-            &Span::default()
-        ).unwrap();
-        
-        assert_eq!(result.type_, NormalizedType::Number);
-    }
-
-    #[test]
-    fn test_if_expression_invalid_condition() {
-        let checker = ExpressionChecker::new();
-        // if (Number) { String }
-        let elif_branches = vec![];
-        let result = checker.check_if_expression(
-            &NormalizedType::Number,
-            &NormalizedType::String,
-            &elif_branches,
-            None,
-            &Span::default()
-        );
-        
-        assert!(matches!(result, Err(SemanticError::NonBooleanCondition { .. })));
-    }
-
-    #[test]
-    fn test_if_expression_invalid_elif_condition() {
-        let checker = ExpressionChecker::new();
-        // if (Boolean) { String } elif (Number) { String }
-        let elif_branches = vec![
-            (NormalizedType::Number, NormalizedType::String)
-        ];
-        let result = checker.check_if_expression(
-            &NormalizedType::Boolean,
-            &NormalizedType::String,
-            &elif_branches,
-            None,
-            &Span::default()
-        );
-        
-        assert!(matches!(result, Err(SemanticError::NonBooleanCondition { .. })));
-    }
-
-    #[test]
-    fn test_if_expression_incompatible_elif_branch() {
-        let checker = ExpressionChecker::new();
-        // if (Boolean) { String } elif (Boolean) { Number }
-        let elif_branches = vec![
-            (NormalizedType::Boolean, NormalizedType::Number)
-        ];
-        let result = checker.check_if_expression(
-            &NormalizedType::Boolean,
-            &NormalizedType::String,
-            &elif_branches,
-            None,
-            &Span::default()
-        );
-        
-        assert!(matches!(result, Err(SemanticError::IncompatibleBranchTypes { .. })));
-    }
-
-    #[test]
-    fn test_if_expression_incompatible_else_branch() {
-        let checker = ExpressionChecker::new();
-        // if (Boolean) { String } else { Number }
-        let elif_branches = vec![];
-        let result = checker.check_if_expression(
-            &NormalizedType::Boolean,
-            &NormalizedType::String,
-            &elif_branches,
-            Some(&NormalizedType::Number),
-            &Span::default()
-        );
-        
-        assert!(matches!(result, Err(SemanticError::IncompatibleBranchTypes { .. })));
-    }
-
-    #[test]
-    fn test_while_expression_valid() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_while_expression(
-            &NormalizedType::Boolean,
-            &NormalizedType::Number,
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Number);
-    }
-
-    #[test]
-    fn test_while_expression_invalid_condition() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_while_expression(
-            &NormalizedType::Number,
-            &NormalizedType::String,
-            &Span::default()
-        );
-        assert!(matches!(result, Err(SemanticError::NonBooleanCondition { .. })));
-    }
-
-    #[test]
-    fn test_for_expression_valid() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_for_expression(
-            &NormalizedType::Unknown,
-            &NormalizedType::Number,
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Number);
-    }
-
-    #[test]
-    fn test_block_valid_elements() {
-        let checker = ExpressionChecker::new();
-        let elements = vec![
-            NormalizedType::Number,
-            NormalizedType::String,
-            NormalizedType::Boolean
-        ];
-        let result = checker.check_block(&elements).unwrap();
-        // The block should return the type of the last element
-        assert_eq!(result.type_, NormalizedType::Boolean);
-    }
-
-    #[test]
-    fn test_block_empty() {
-        let checker = ExpressionChecker::new();
-        let elements = vec![];
-        let result = checker.check_block(&elements).unwrap();
-        // Un bloque vacío asume tipo Unknown
-        assert_eq!(result.type_, NormalizedType::Unknown);
-    }
-
-    #[test]
-    fn test_let_expression_valid() {
-        let checker = ExpressionChecker::new();
-        // let x: Number = 5;
-        let result = checker.check_let_expression(
-            Some(&NormalizedType::Number),
-            Some(&NormalizedType::Number),
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Number);
-        
-        // let inferred = 5;
-        let result = checker.check_let_expression(
-            None,
-            Some(&NormalizedType::Number),
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Number);
-    }
-
-    #[test]
-    fn test_let_expression_type_mismatch() {
-        let checker = ExpressionChecker::new();
-        // let x: Number = "hello";
-        let result = checker.check_let_expression(
-            Some(&NormalizedType::Number),
-            Some(&NormalizedType::String),
-            &Span::default()
-        );
-        assert!(matches!(result, Err(SemanticError::TypeMismatch { .. })));
-    }
-
-    #[test]
-    fn test_assignment_valid() {
-        let checker = ExpressionChecker::new();
-        // x = 5; (where x is a number lvalue)
-        let target = ExpressionType::lvalue(NormalizedType::Number);
-        let result = checker.check_assignment_expression(
-            &target,
-            &NormalizedType::Number,
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Number);
-        assert!(!result.is_lvalue); // The result of the assignment expression is not an lvalue
-    }
-
-    #[test]
-    fn test_assignment_invalid_lvalue() {
-        let checker = ExpressionChecker::new();
-        // 5 = 10; (where 5 is a value, not an lvalue)
-        let target = ExpressionType::value(NormalizedType::Number);
-        let result = checker.check_assignment_expression(
-            &target,
-            &NormalizedType::Number,
-            &Span::default()
-        );
-        assert!(matches!(result, Err(SemanticError::InvalidTarget { .. })));
-    }
-
-    #[test]
-    fn test_assignment_type_mismatch() {
-        let checker = ExpressionChecker::new();
-        // x = "hello"; (where x is a number lvalue)
-        let target = ExpressionType::lvalue(NormalizedType::Number);
-        let result = checker.check_assignment_expression(
-            &target,
-            &NormalizedType::String,
-            &Span::default()
-        );
-        assert!(matches!(result, Err(SemanticError::TypeMismatch { .. })));
-    }
-
-    #[test]
-    fn test_function_call_builtin_print() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_function_call(
-            "print",
-            &[NormalizedType::String],
-            None,
-            None,
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::String);
-    }
-
-    #[test]
-    fn test_function_call_builtin_math() {
-        let checker = ExpressionChecker::new();
-        
-        // sin(Number) -> Number
-        let result = checker.check_function_call(
-            "sin",
-            &[NormalizedType::Number],
-            None,
-            None,
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Number);
-        
-        // log(Number, Number) -> Number
-        let result = checker.check_function_call(
-            "log",
-            &[NormalizedType::Number, NormalizedType::Number],
-            None,
-            None,
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Number);
-    }
-
-    #[test]
-    fn test_function_call_builtin_invalid() {
-        let checker = ExpressionChecker::new();
-        // sin(String)
-        let result = checker.check_function_call(
-            "sin",
-            &[NormalizedType::String],
-            None,
-            None,
-            &Span::default()
-        );
-        assert!(matches!(result, Err(SemanticError::ArgumentTypeMismatch { .. })));
-    }
-
-    #[test]
-    fn test_new_expression_valid() {
-        let checker = ExpressionChecker::new();
-        let expected_params = vec![
-            ("age".to_string(), NormalizedType::Number)
-        ];
-        let result = checker.check_new(
-            "Person",
-            &[NormalizedType::Number],
-            Some(&expected_params),
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Named("Person".to_string()));
-    }
-
-    #[test]
-    fn test_new_expression_invalid_args() {
-        let checker = ExpressionChecker::new();
-        let expected_params = vec![
-            ("age".to_string(), NormalizedType::Number)
-        ];
-        let result = checker.check_new(
-            "Person",
-            &[NormalizedType::String],
-            Some(&expected_params),
-            &Span::default()
-        );
-        assert!(matches!(result, Err(SemanticError::ArgumentTypeMismatch { .. })));
-
-        let result_count = checker.check_new(
-            "Person",
-            &[],
-            Some(&expected_params),
-            &Span::default()
-        );
-        assert!(matches!(result_count, Err(SemanticError::InvalidConstructor { .. })));
-    }
-
-    #[test]
-    fn test_member_access_valid() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_member_access(
-            &NormalizedType::Named("Person".to_string()),
-            "age",
-            Some(&NormalizedType::Number),
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Number);
-    }
-
-    #[test]
-    fn test_member_access_invalid() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_member_access(
-            &NormalizedType::Named("Person".to_string()),
-            "unknown_field",
-            None,
-            &Span::default()
-        );
-        assert!(matches!(result, Err(SemanticError::MemberNotFound { .. })));
-    }
-
-    #[test]
-    fn test_is_operator() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_is(
-            &NormalizedType::Number,
-            &NormalizedType::Named("Object".to_string()),
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Boolean);
-    }
-
-    #[test]
-    fn test_as_operator() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_as(
-            &NormalizedType::Number,
-            &NormalizedType::Named("Object".to_string()),
-            &Span::default()
-        ).unwrap();
-        assert_eq!(result.type_, NormalizedType::Named("Object".to_string()));
-    }
-
-    #[test]
-    fn test_index_access_valid() {
-        let checker = ExpressionChecker::new();
-        let vec_type = NormalizedType::Vector(Box::new(NormalizedType::Number));
-        let result = checker.check_index_access(&vec_type, &NormalizedType::Number, &Span::default()).unwrap();
-        assert_eq!(result.type_, NormalizedType::Number);
-        assert!(result.is_lvalue);
-    }
-
-    #[test]
-    fn test_index_access_invalid_target() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_index_access(&NormalizedType::Number, &NormalizedType::Number, &Span::default());
-        assert!(matches!(result.unwrap_err(), SemanticError::NotIndexable { .. }));
-    }
-
-    #[test]
-    fn test_index_access_invalid_index() {
-        let checker = ExpressionChecker::new();
-        let vec_type = NormalizedType::Vector(Box::new(NormalizedType::Number));
-        let result = checker.check_index_access(&vec_type, &NormalizedType::String, &Span::default());
-        assert!(matches!(result.unwrap_err(), SemanticError::InvalidIndexType { .. }));
-    }
-
-    #[test]
-    fn test_vector_literal_valid() {
-        let checker = ExpressionChecker::new();
-        let types = vec![NormalizedType::Number, NormalizedType::Number];
-        let result = checker.check_vector_literal(&types, &Span::default()).unwrap();
-        assert_eq!(result.type_, NormalizedType::Vector(Box::new(NormalizedType::Number)));
-    }
-
-    #[test]
-    fn test_vector_literal_inconsistent() {
-        let checker = ExpressionChecker::new();
-        let types = vec![NormalizedType::Number, NormalizedType::String];
-        let result = checker.check_vector_literal(&types, &Span::default());
-        assert!(matches!(result.unwrap_err(), SemanticError::InconsistentArrayTypes { .. }));
-    }
-
-    #[test]
-    fn test_iterable_usage() {
-        let checker = ExpressionChecker::new();
-        let result = checker.check_iterable_usage(&NormalizedType::Number, &NormalizedType::Iterable(Box::new(NormalizedType::Number)), &Span::default()).unwrap();
-        assert_eq!(result.type_, NormalizedType::Iterable(Box::new(NormalizedType::Number)));
-    }
-}
+// tests moved to consolidated `tests.rs`

@@ -154,4 +154,54 @@ impl ControlFlowGraph {
 
         (cond_block, body_block, exit_block)
     }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if !self.blocks.is_empty() {
+            if let Some(entry) = &self.entry {
+                if !self.blocks.contains_key(entry) {
+                    errors.push(format!("Entry block '{}' does not exist in the graph.", entry.0));
+                }
+            } else {
+                errors.push("Control flow graph has blocks but no entry block is set.".to_string());
+            }
+        }
+
+        for (id, block) in &self.blocks {
+            // Validate predecessors
+            for pred in &block.predecessors {
+                if let Some(pred_block) = self.blocks.get(pred) {
+                    if !pred_block.successors.contains(id) {
+                        errors.push(format!(
+                            "Edge mismatch: Block '{}' claims '{}' as predecessor, but '{}' doesn't list it as successor.",
+                            id.0, pred.0, pred.0
+                        ));
+                    }
+                } else {
+                    errors.push(format!("Block '{}' has non-existent predecessor '{}'.", id.0, pred.0));
+                }
+            }
+
+            // Validate successors
+            for succ in &block.successors {
+                if let Some(succ_block) = self.blocks.get(succ) {
+                    if !succ_block.predecessors.contains(id) {
+                        errors.push(format!(
+                            "Edge mismatch: Block '{}' claims '{}' as successor, but '{}' doesn't list it as predecessor.",
+                            id.0, succ.0, succ.0
+                        ));
+                    }
+                } else {
+                    errors.push(format!("Block '{}' has non-existent successor '{}'.", id.0, succ.0));
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }

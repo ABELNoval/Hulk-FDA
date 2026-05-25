@@ -204,4 +204,84 @@ impl ControlFlowGraph {
             Err(errors)
         }
     }
+
+    pub fn dfs_traversal(&self) -> Vec<BasicBlockId> {
+        let mut visited = std::collections::HashSet::new();
+        let mut order = Vec::new();
+
+        if let Some(entry) = &self.entry {
+            self.dfs_recursive(entry, &mut visited, &mut order);
+        }
+
+        order
+    }
+
+    fn dfs_recursive(
+        &self,
+        current: &BasicBlockId,
+        visited: &mut std::collections::HashSet<BasicBlockId>,
+        order: &mut Vec<BasicBlockId>,
+    ) {
+        if visited.insert(current.clone()) {
+            order.push(current.clone());
+            if let Some(successors) = self.successors(current) {
+                for succ in successors {
+                    self.dfs_recursive(succ, visited, order);
+                }
+            }
+        }
+    }
+
+    pub fn post_order_traversal(&self) -> Vec<BasicBlockId> {
+        let mut visited = std::collections::HashSet::new();
+        let mut order = Vec::new();
+
+        if let Some(entry) = &self.entry {
+            self.post_order_recursive(entry, &mut visited, &mut order);
+        }
+
+        order
+    }
+
+    fn post_order_recursive(
+        &self,
+        current: &BasicBlockId,
+        visited: &mut std::collections::HashSet<BasicBlockId>,
+        order: &mut Vec<BasicBlockId>,
+    ) {
+        if visited.insert(current.clone()) {
+            if let Some(successors) = self.successors(current) {
+                for succ in successors {
+                    if !visited.contains(succ) {
+                        self.post_order_recursive(succ, visited, order);
+                    }
+                }
+            }
+            order.push(current.clone());
+        }
+    }
+
+    pub fn bfs_traversal(&self) -> Vec<BasicBlockId> {
+        let mut visited = std::collections::HashSet::new();
+        let mut order = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+
+        if let Some(entry) = &self.entry {
+            queue.push_back(entry.clone());
+            visited.insert(entry.clone());
+        }
+
+        while let Some(current) = queue.pop_front() {
+            order.push(current.clone());
+            if let Some(successors) = self.successors(&current) {
+                for succ in successors {
+                    if visited.insert(succ.clone()) {
+                        queue.push_back(succ.clone());
+                    }
+                }
+            }
+        }
+
+        order
+    }
 }

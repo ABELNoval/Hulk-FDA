@@ -116,4 +116,42 @@ impl ControlFlowGraph {
     pub fn successors(&self, id: &BasicBlockId) -> Option<&[BasicBlockId]> {
         self.blocks.get(id).map(|b| b.successors.as_slice())
     }
+
+    pub fn build_if_else(
+        &mut self,
+        current: &BasicBlockId,
+        then_name: impl Into<String>,
+        else_name: impl Into<String>,
+        merge_name: impl Into<String>,
+    ) -> (BasicBlockId, BasicBlockId, BasicBlockId) {
+        let then_block = self.create_block(then_name);
+        let else_block = self.create_block(else_name);
+        let merge_block = self.create_block(merge_name);
+
+        self.add_edge(current, &then_block);
+        self.add_edge(current, &else_block);
+        self.add_edge(&then_block, &merge_block);
+        self.add_edge(&else_block, &merge_block);
+
+        (then_block, else_block, merge_block)
+    }
+
+    pub fn build_loop(
+        &mut self,
+        current: &BasicBlockId,
+        cond_name: impl Into<String>,
+        body_name: impl Into<String>,
+        exit_name: impl Into<String>,
+    ) -> (BasicBlockId, BasicBlockId, BasicBlockId) {
+        let cond_block = self.create_block(cond_name);
+        let body_block = self.create_block(body_name);
+        let exit_block = self.create_block(exit_name);
+
+        self.add_edge(current, &cond_block);
+        self.add_edge(&cond_block, &body_block);
+        self.add_edge(&cond_block, &exit_block); // Rama de salida del loop
+        self.add_edge(&body_block, &cond_block); // Backedge para repetir
+
+        (cond_block, body_block, exit_block)
+    }
 }

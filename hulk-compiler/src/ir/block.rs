@@ -99,4 +99,21 @@ impl ControlFlowGraph {
             to_block.add_predecessor(from.clone());
         }
     }
+
+    pub fn remove_edge(&mut self, from: &BasicBlockId, to: &BasicBlockId) {
+        if let Some(from_block) = self.blocks.get_mut(from) {
+            from_block.successors.retain(|s| s != to);
+        }
+        if let Some(to_block) = self.blocks.get_mut(to) {
+            to_block.predecessors.retain(|p| p != from);
+        }
+    }
+
+    pub fn predecessors(&self, id: &BasicBlockId) -> Option<&[BasicBlockId]> {
+        self.blocks.get(id).map(|b| b.predecessors.as_slice())
+    }
+
+    pub fn successors(&self, id: &BasicBlockId) -> Option<&[BasicBlockId]> {
+        self.blocks.get(id).map(|b| b.successors.as_slice())
+    }
 }

@@ -49,3 +49,54 @@ impl BasicBlock {
         }
     }
 }
+
+#[derive(Debug, Clone, Default)]
+pub struct ControlFlowGraph {
+    pub blocks: std::collections::HashMap<BasicBlockId, BasicBlock>,
+    pub entry: Option<BasicBlockId>,
+}
+
+impl ControlFlowGraph {
+    pub fn new() -> Self {
+        Self {
+            blocks: std::collections::HashMap::new(),
+            entry: None,
+        }
+    }
+
+    pub fn create_block(&mut self, name: impl Into<String>) -> BasicBlockId {
+        let id = BasicBlockId::new(name);
+        let block = BasicBlock::new(id.0.clone());
+        
+        if self.entry.is_none() {
+            self.entry = Some(id.clone());
+        }
+        
+        self.blocks.insert(id.clone(), block);
+        id
+    }
+
+    pub fn insert_block(&mut self, block: BasicBlock) {
+        if self.entry.is_none() {
+            self.entry = Some(block.id.clone());
+        }
+        self.blocks.insert(block.id.clone(), block);
+    }
+
+    pub fn block(&self, id: &BasicBlockId) -> Option<&BasicBlock> {
+        self.blocks.get(id)
+    }
+
+    pub fn block_mut(&mut self, id: &BasicBlockId) -> Option<&mut BasicBlock> {
+        self.blocks.get_mut(id)
+    }
+
+    pub fn add_edge(&mut self, from: &BasicBlockId, to: &BasicBlockId) {
+        if let Some(from_block) = self.blocks.get_mut(from) {
+            from_block.add_successor(to.clone());
+        }
+        if let Some(to_block) = self.blocks.get_mut(to) {
+            to_block.add_predecessor(from.clone());
+        }
+    }
+}

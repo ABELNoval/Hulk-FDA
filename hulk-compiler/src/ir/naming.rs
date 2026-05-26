@@ -30,3 +30,40 @@ impl IRNaming {
         format!("%p{}", index)
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct SSAValueGenerator {
+    counter: usize,
+}
+
+impl SSAValueGenerator {
+    pub fn new() -> Self {
+        Self { counter: 0 }
+    }
+
+    pub fn next_value(&mut self) -> String {
+        let name = IRNaming::temporary_name(self.counter);
+        self.counter += 1;
+        name
+    }
+
+    pub fn next_parameter(&mut self) -> String {
+        let name = IRNaming::parameter_name(self.counter);
+        self.counter += 1;
+        name
+    }
+
+    pub fn reset(&mut self) {
+        self.counter = 0;
+    }
+
+    pub fn current_count(&self) -> usize {
+        self.counter
+    }
+}
+
+impl Default for SSAValueGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}

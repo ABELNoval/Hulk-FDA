@@ -40,6 +40,38 @@ impl IRFunction {
     pub fn block_mut(&mut self, id: &BasicBlockId) -> Option<&mut BasicBlock> {
         self.blocks.iter_mut().find(|block| &block.id == id)
     }
+
+    pub fn block_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    pub fn fmt_display(&self, indent: usize) -> String {
+        let indent_str = " ".repeat(indent);
+        let next_indent_str = " ".repeat(indent + 2);
+
+        let params = self
+            .parameters
+            .iter()
+            .map(|p| {
+                let ty = p.ty.as_deref().unwrap_or("?");
+                format!("{}: {}", p.id.0, ty)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let return_type = self.return_type.as_deref().unwrap_or("?");
+
+        let mut result = format!(
+            "{}Function: {}({}) -> {}\n",
+            indent_str, self.name, params, return_type
+        );
+
+        for block in &self.blocks {
+            result.push_str(&block.fmt_display(indent + 2));
+        }
+
+        result
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,5 +98,17 @@ impl IRModule {
 
     pub fn function_mut(&mut self, name: &str) -> Option<&mut IRFunction> {
         self.functions.iter_mut().find(|function| function.name == name)
+    }
+
+    pub fn function_count(&self) -> usize {
+        self.functions.len()
+    }
+
+    pub fn fmt_display(&self) -> String {
+        let mut result = format!("Module: {}\n", self.name);
+        for function in &self.functions {
+            result.push_str(&function.fmt_display(2));
+        }
+        result
     }
 }

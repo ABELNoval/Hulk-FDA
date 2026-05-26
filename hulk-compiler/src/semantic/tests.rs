@@ -7,7 +7,6 @@ use super::analyzer::*;
 use super::expression_checker::*;
 use super::symbol_table::*;
 use super::type_system::*;
-use super::*;
 use crate::parser::ast::*;
 use crate::utils::errors::semantic::SemanticError;
 use crate::utils::errors::span::Span;
@@ -327,7 +326,7 @@ fn test_if_expression_invalid_condition() {
     let result = checker.check_if_expression(
         &NormalizedType::Number,
         &NormalizedType::String,
-        &vec![],
+        &[],
         None,
         &Span::default(),
     );
@@ -507,11 +506,6 @@ fn test_context_push_and_clear_error() {
 // - Verificación de llamadas a funciones
 //
 // =============================================================================
-
-#[cfg(test)]
-mod tests {
-    // Los tests unitarios del Semantic irán aquí
-}
 
 // Additional tests for inheritance and protocol edge-cases
 #[test]

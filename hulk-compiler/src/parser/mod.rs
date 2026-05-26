@@ -161,7 +161,7 @@ impl Parser {
     fn parse_block(&mut self) -> Expr {
         let start_token = self.expect(TokenType::LeftBrace);
 
-        if let Err(_) = start_token {
+        if start_token.is_err() {
             return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
         }
 
@@ -174,7 +174,7 @@ impl Parser {
             self.cursor.match_token(&TokenType::Semicolon);
         }
 
-        if let Err(_) = self.expect(TokenType::RightBrace) {
+        if self.expect(TokenType::RightBrace).is_err() {
             self.synchronize();
         }
 
@@ -186,7 +186,7 @@ impl Parser {
     fn parse_let_binding(&mut self) -> Expr {
         let start_token = self.expect(TokenType::Let);
 
-        if let Err(_) = start_token {
+        if start_token.is_err() {
             return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
         }
 
@@ -207,11 +207,11 @@ impl Parser {
 
         let end_span = self.cursor.peek().span.clone();
 
-        if let Some(expr) = let_exprs.first().cloned() {
-            if let_exprs.len() == 1 {
-                let span = start_span.merge(&expr.span);
-                return Expr::new(expr.kind, span);
-            }
+        if let Some(expr) = let_exprs.first().cloned()
+            && let_exprs.len() == 1
+        {
+            let span = start_span.merge(&expr.span);
+            return Expr::new(expr.kind, span);
         }
 
         if !let_exprs.is_empty() {
@@ -280,7 +280,7 @@ impl Parser {
             None
         };
 
-        if let Err(_) = self.expect(TokenType::Equal) {
+        if self.expect(TokenType::Equal).is_err() {
             self.synchronize();
             return None;
         }
@@ -295,20 +295,20 @@ impl Parser {
     fn parse_if_expr(&mut self) -> Expr {
         let start_token = self.expect(TokenType::If);
 
-        if let Err(_) = start_token {
+        if start_token.is_err() {
             return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
         }
 
         let start_span = start_token.unwrap().span;
 
-        if let Err(_) = self.expect(TokenType::LeftParen) {
+        if self.expect(TokenType::LeftParen).is_err() {
             self.synchronize();
             return Expr::literal(Literal::Number(0.0), start_span);
         }
 
         let condition = self.parse_expression();
 
-        if let Err(_) = self.expect(TokenType::RightParen) {
+        if self.expect(TokenType::RightParen).is_err() {
             self.synchronize();
         }
 
@@ -329,14 +329,14 @@ impl Parser {
         let mut elif_parts = Vec::new();
 
         while self.cursor.match_token(&TokenType::Elif) {
-            if let Err(_) = self.expect(TokenType::LeftParen) {
+            if self.expect(TokenType::LeftParen).is_err() {
                 self.synchronize();
                 break;
             }
 
             let condition = self.parse_expression();
 
-            if let Err(_) = self.expect(TokenType::RightParen) {
+            if self.expect(TokenType::RightParen).is_err() {
                 self.synchronize();
             }
 
@@ -356,20 +356,20 @@ impl Parser {
     fn parse_while_expr(&mut self) -> Expr {
         let start_token = self.expect(TokenType::While);
 
-        if let Err(_) = start_token {
+        if start_token.is_err() {
             return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
         }
 
         let start_span = start_token.unwrap().span;
 
-        if let Err(_) = self.expect(TokenType::LeftParen) {
+        if self.expect(TokenType::LeftParen).is_err() {
             self.synchronize();
             return Expr::literal(Literal::Number(0.0), start_span);
         }
 
         let condition = self.parse_expression();
 
-        if let Err(_) = self.expect(TokenType::RightParen) {
+        if self.expect(TokenType::RightParen).is_err() {
             self.synchronize();
         }
 
@@ -384,7 +384,7 @@ impl Parser {
     fn parse_for_expr(&mut self) -> Expr {
         let start_token = self.expect(TokenType::For);
 
-        if let Err(_) = start_token {
+        if start_token.is_err() {
             return Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone());
         }
 
@@ -406,7 +406,7 @@ impl Parser {
 
         self.cursor.advance();
 
-        if let Err(_) = self.expect(TokenType::In) {
+        if self.expect(TokenType::In).is_err() {
             self.synchronize();
             return Expr::literal(Literal::Number(0.0), start_span);
         }
@@ -1005,10 +1005,10 @@ impl Parser {
             }
 
             if self.cursor.check(&TokenType::Function) {
-                if let Some(declaration) = self.parse_function_declaration() {
-                    if let DeclarationKind::Function(function) = declaration.kind {
-                        members.push(TypeMember::Method(function));
-                    }
+                if let Some(declaration) = self.parse_function_declaration()
+                    && let DeclarationKind::Function(function) = declaration.kind
+                {
+                    members.push(TypeMember::Method(function));
                 }
             } else if matches!(self.cursor.peek().token_type, TokenType::Identifier(_)) {
                 if let Some(attribute) = self.parse_type_attribute() {

@@ -351,13 +351,13 @@ impl ExpressionChecker {
         }
 
         // Validar else branch
-        if let Some(else_type) = else_type {
-            if then_type != else_type {
-                return Err(SemanticError::IncompatibleBranchTypes {
-                    then_type: then_type.to_string(),
-                    else_type: else_type.to_string(),
-                });
-            }
+        if let Some(else_type) = else_type
+            && then_type != else_type
+        {
+            return Err(SemanticError::IncompatibleBranchTypes {
+                then_type: then_type.to_string(),
+                else_type: else_type.to_string(),
+            });
         }
 
         Ok(ExpressionType::value(then_type.clone()))
@@ -425,14 +425,14 @@ impl ExpressionChecker {
         value_type: Option<&NormalizedType>,
         _span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        if let (Some(expected), Some(found)) = (annotation_type, value_type) {
-            if expected != found {
-                return Err(SemanticError::TypeMismatch {
-                    expected: expected.to_string(),
-                    found: found.to_string(),
-                    context: "asignación en let".to_string(),
-                });
-            }
+        if let (Some(expected), Some(found)) = (annotation_type, value_type)
+            && expected != found
+        {
+            return Err(SemanticError::TypeMismatch {
+                expected: expected.to_string(),
+                found: found.to_string(),
+                context: "asignación en let".to_string(),
+            });
         }
 
         // El tipo de retorno de let como expresión per se puede ser el tipo declarado o inferido

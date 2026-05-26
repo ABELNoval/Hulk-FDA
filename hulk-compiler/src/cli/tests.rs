@@ -13,6 +13,41 @@
 // =============================================================================
 
 #[cfg(test)]
-mod tests {
-    // Los tests unitarios del CLI irán aquí
+mod tests_cli {
+    use crate::{CliCommand, CompilationMode, InputSource};
+
+    #[test]
+    fn parses_help_flag() {
+        let command = CliCommand::parse_args(vec!["--help".to_string()]).unwrap();
+        assert!(matches!(command, CliCommand::Help));
+    }
+
+    #[test]
+    fn parses_file_and_mode() {
+        let command =
+            CliCommand::parse_args(vec!["--parse".to_string(), "programa.hulk".to_string()])
+                .unwrap();
+
+        match command {
+            CliCommand::Run(config) => {
+                assert_eq!(config.mode, CompilationMode::Parse);
+                assert!(matches!(config.input, InputSource::File(_)));
+            }
+            CliCommand::Help => panic!("se esperaba una corrida, no ayuda"),
+        }
+    }
+
+    #[test]
+    fn parses_inline_source() {
+        let command =
+            CliCommand::parse_args(vec!["--source".to_string(), "1 + 2".to_string()]).unwrap();
+
+        match command {
+            CliCommand::Run(config) => {
+                assert_eq!(config.mode, CompilationMode::Semantic);
+                assert!(matches!(config.input, InputSource::Inline(_)));
+            }
+            CliCommand::Help => panic!("se esperaba una corrida, no ayuda"),
+        }
+    }
 }

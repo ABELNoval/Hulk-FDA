@@ -72,8 +72,6 @@ impl SymbolInfo {
 /// Mantiene múltiples niveles de scopes (jerarquía).
 /// - Scope 0: global (builtins, declaraciones de funciones/tipos/protocolos)
 /// - Scope 1+: locales (let expressions, function bodies)
-///
-
 pub struct SymbolTable {
     /// Stack de scopes. El primero es el global, los demás son locales.
     scopes: Vec<HashMap<String, SymbolInfo>>,
@@ -170,13 +168,11 @@ impl SymbolTable {
     }
 
     /// Verifica si un símbolo está declarado en algún scope (sin retornarlo)
-
     pub fn is_symbol_declared(&self, name: &str) -> bool {
         self.lookup(name).is_some()
     }
 
     /// Verifica si estamos en el scope global
-
     pub fn is_global_scope(&self) -> bool {
         self.scope_depth() == 1
     }
@@ -210,7 +206,6 @@ impl SymbolTable {
     }
 
     /// Lista todos los símbolos desde el scope actual hacia el global (para debugging)
-
     pub fn all_symbols_in_chain(&self) -> Vec<(usize, String, SymbolInfo)> {
         let mut result = Vec::new();
 
@@ -224,7 +219,6 @@ impl SymbolTable {
     }
 
     /// Lista solo los símbolos en el scope global
-
     pub fn global_symbols(&self) -> Vec<SymbolInfo> {
         self.scopes
             .first()
@@ -364,7 +358,7 @@ impl SymbolTable {
     pub fn symbol_availability(&self, name: &str) -> (bool, bool, bool) {
         let exists = self.is_symbol_declared(name);
         let is_local = self.lookup_local(name).is_some();
-        let is_global = self.scopes.first().map_or(false, |g| g.contains_key(name));
+        let is_global = self.scopes.first().is_some_and(|g| g.contains_key(name));
 
         (exists, is_local, is_global)
     }
@@ -381,7 +375,7 @@ impl SymbolTable {
 
     /// Verifica si el símbolo existe en el scope global específicamente
     pub fn exists_in_global(&self, name: &str) -> bool {
-        self.scopes.first().map_or(false, |g| g.contains_key(name))
+        self.scopes.first().is_some_and(|g| g.contains_key(name))
     }
 
     /// Verifica si el símbolo existe SOLO en scopes locales (no en global)
@@ -390,7 +384,6 @@ impl SymbolTable {
     }
 
     /// Declara los símbolos builtin globales (print, sqrt, sin, cos, log, exp, rand)
-
     pub fn declare_builtins(&mut self) {
         // Builtin functions
         let span = Span::default();

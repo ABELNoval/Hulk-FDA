@@ -281,10 +281,11 @@ impl DisplayError for LexerError {
     /// Retorna una sugerencia de cómo arreglar el error (si aplica)
     fn help(&self) -> Option<String> {
         match self {
-            LexerError::InvalidEscapeSequence { found, .. } => Some(format!(
+            LexerError::InvalidEscapeSequence { found: _, .. } => Some(
                 "secuencias de escape válidas: \\n, \\t, \\r, \\\\, \\\", \\0. \
                     Si quieres el caracter '\\' literal, usa '\\\\'."
-            )),
+                    .to_string(),
+            ),
             LexerError::UnterminatedString { .. } => {
                 Some("asegúrate de cerrar el string con '\"'".to_string())
             }

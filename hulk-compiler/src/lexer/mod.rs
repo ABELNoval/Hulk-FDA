@@ -252,14 +252,14 @@ impl Lexer {
         let start = self.position;
 
         // Parte entera
-        while self.current_char().map_or(false, |c| c.is_ascii_digit()) {
+        while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
             self.advance();
         }
 
         // Parte decimal
         if self.current_char() == Some('.') {
             self.advance();
-            while self.current_char().map_or(false, |c| c.is_ascii_digit()) {
+            while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
                 self.advance();
             }
         }
@@ -274,7 +274,7 @@ impl Lexer {
             }
 
             // debe haber al menos un número después
-            if !self.current_char().map_or(false, |c| c.is_ascii_digit()) {
+            if !self.current_char().is_some_and(|c| c.is_ascii_digit()) {
                 let partial_number: String = self.input[start..self.position].iter().collect();
                 return self.error_token(
                     LexerError::InvalidExponent {
@@ -285,7 +285,7 @@ impl Lexer {
                 );
             }
 
-            while self.current_char().map_or(false, |c| c.is_ascii_digit()) {
+            while self.current_char().is_some_and(|c| c.is_ascii_digit()) {
                 self.advance();
             }
         }

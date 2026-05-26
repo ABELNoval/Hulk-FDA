@@ -16,8 +16,7 @@
 
 use crate::parser::ast::Program;
 use crate::parser::ast::{
-    BinaryOperator, Declaration, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal,
-    ProtocolDeclaration, TypeDeclaration, TypeMember, TypeReferenceKind, UnaryOperator,
+    DeclarationKind, Expr, ExprKind, FunctionDeclaration, TypeMember, TypeReferenceKind,
 };
 use crate::semantic::expression_checker::ExpressionChecker;
 use crate::semantic::symbol_table::SymbolTable;
@@ -338,7 +337,7 @@ impl SemanticAnalyzer {
                     match self.context.expression_checker.check_function_call(
                         name,
                         &arg_types,
-                        expected_params.as_ref().map(|v| v.as_slice()),
+                        expected_params.as_deref(),
                         expected_return.as_ref(),
                         &expr.span,
                     ) {

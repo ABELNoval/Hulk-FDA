@@ -21,3 +21,108 @@
 // - Manejar múltiples archivos fuente si es necesario
 //
 // =============================================================================
+
+use crate::lexer::{Lexer, Token};
+use crate::parser::{Parser, Program};
+use crate::semantic::SemanticAnalyzer;
+use crate::utils::errors::{CompilationError, CompileResult};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineStage {
+	Lex,
+	Parse,
+	Semantic,
+}
+
+impl PipelineStage {
+	pub fn label(self) -> &'static str {
+		match self {
+			PipelineStage::Lex => "lex",
+			PipelineStage::Parse => "parse",
+			PipelineStage::Semantic => "semantic",
+		}
+	}
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineReport {
+	pub stage: PipelineStage,
+	pub tokens: Vec<Token>,
+	pub program: Option<Program>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompilationPipeline {
+	source: String,
+	file_name: String,
+}
+
+impl CompilationPipeline {
+	pub fn new(source: impl Into<String>, file_name: impl Into<String>) -> Self {
+		Self {
+			source: source.into(),
+			file_name: file_name.into(),
+		}
+	}
+
+	pub fn run_to(&self, stage: PipelineStage) -> CompileResult<PipelineReport> {
+		let tokens = self.lex()?;
+
+		if stage == PipelineStage::Lex {
+			return Ok(PipelineReport {
+				stage,
+				tokens,
+				program: None,
+			});
+		}
+
+		let program = self.parse(tokens.clone())?;
+
+		if stage == PipelineStage::Parse {
+			return Ok(PipelineReport {
+				stage,
+				tokens,
+				program: Some(program),
+			});
+		}
+
+		self.semantic(&program)?;
+
+		Ok(PipelineReport {
+			stage,
+			tokens,
+			program: Some(program),
+		})
+	}
+
+	pub fn lex(&self) -> CompileResult<Vec<Token>> {
+		let mut lexer = Lexer::new(self.source.clone(), self.file_name.clone());
+		let (tokens, errors) = lexer.tokenize_with_errors();
+
+		if let Some(diagnostic) = errors.into_iter().next() {
+			return Err(CompilationError::from(diagnostic.error));
+		}
+
+		Ok(tokens)
+	}
+
+	pub fn parse(&self, tokens: Vec<Token>) -> CompileResult<Program> {
+		let mut parser = Parser::new(tokens);
+		let (program, errors) = parser.parse_program_with_errors();
+
+		if let Some(diagnostic) = errors.into_iter().next() {
+			return Err(CompilationError::from(diagnostic.error));
+		}
+
+		Ok(program)
+	}
+
+	pub fn semantic(&self, program: &Program) -> CompileResult<()> {
+		let mut analyzer = SemanticAnalyzer::new();
+		analyzer.analyze(program).map_err(CompilationError::from)?;
+		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests;

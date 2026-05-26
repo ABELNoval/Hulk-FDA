@@ -13,7 +13,7 @@
 // =============================================================================
 
 use crate::parser::ast::{
-    Expr, FunctionDeclaration, Literal, ProtocolMethodSignature, TypeReference, TypeReferenceKind,
+    FunctionDeclaration, ProtocolMethodSignature, TypeReference, TypeReferenceKind,
 };
 use crate::utils::errors::semantic::SemanticError;
 use crate::utils::errors::span::Span;
@@ -174,12 +174,11 @@ impl TypeEnvironment {
                     return false;
                 }
                 visited.insert(start.to_string());
-                if let Some(t) = types.get(start) {
-                    if let Some(parent) = &t.parent {
-                        if reaches_target(types, parent, target, visited) {
-                            return true;
-                        }
-                    }
+                if let Some(t) = types.get(start)
+                    && let Some(parent) = &t.parent
+                    && reaches_target(types, parent, target, visited)
+                {
+                    return true;
                 }
                 false
             }
@@ -399,7 +398,7 @@ impl TypeEnvironment {
     pub fn get_parent_type(&self, type_name: &str) -> Option<String> {
         self.user_types
             .get(type_name)
-            .and_then(|t| t.parent.as_ref().map(|p| p.clone()))
+            .and_then(|t| t.parent.clone())
     }
 
     /// Verifica si type_a es subtype de type_b (a hereda de b)
@@ -448,10 +447,7 @@ impl TypeEnvironment {
         type_name: &str,
         method_name: &str,
     ) -> Option<FunctionDeclaration> {
-        let mut cur = match self.get_parent_type(type_name) {
-            Some(p) => p,
-            None => return None,
-        };
+        let mut cur = self.get_parent_type(type_name)?;
 
         while let Some(tinfo) = self.user_types.get(&cur) {
             for m in &tinfo.methods {
@@ -575,10 +571,10 @@ impl TypeEnvironment {
 
         // Validar anotaciones en atributos
         for member in &td.members {
-            if let crate::parser::ast::TypeMember::Attribute(attr) = member {
-                if let Some(ann) = &attr.annotation {
-                    self.validate_type_reference(ann)?;
-                }
+            if let crate::parser::ast::TypeMember::Attribute(attr) = member
+                && let Some(ann) = &attr.annotation
+            {
+                self.validate_type_reference(ann)?;
             }
         }
 

@@ -617,3 +617,111 @@ fn test_protocol_conformance_inherited_method() {
 
     assert!(env.type_conforms_to_protocol("Child", "PChild"));
 }
+
+// ========= Functor (protocol invoke) tests =========
+
+#[test]
+fn test_functor_parameter_call_ok() {
+    let proto_sig = crate::parser::ast::ProtocolMethodSignature {
+        name: "invoke".into(),
+        parameters: vec![crate::parser::ast::Parameter::new(
+            "x".into(),
+            Some(crate::parser::ast::TypeReference::new("Number".into(), Span::default())),
+            Span::default(),
+        )],
+        return_type: crate::parser::ast::TypeReference::new("Number".into(), Span::default()),
+        span: Span::default(),
+    };
+
+    let proto_decl = crate::parser::ast::ProtocolDeclaration {
+        name: "Callable".into(),
+        extends: vec![],
+        members: vec![proto_sig],
+    };
+
+    let func = crate::parser::ast::FunctionDeclaration {
+        name: "use_functor".into(),
+        parameters: vec![crate::parser::ast::Parameter::new(
+            "f".into(),
+            Some(crate::parser::ast::TypeReference::new("Callable".into(), Span::default())),
+            Span::default(),
+        )],
+        return_type: Some(crate::parser::ast::TypeReference::new("Number".into(), Span::default())),
+        body: crate::parser::ast::Expr::call(
+            crate::parser::ast::Expr::identifier("f".into(), Span::default()),
+            vec![crate::parser::ast::Expr::literal(crate::parser::ast::Literal::Number(1.0), Span::default())],
+            Span::default(),
+        ),
+    };
+
+    let program = crate::parser::ast::Program::new(
+        vec![
+            crate::parser::ast::Declaration::new(crate::parser::ast::DeclarationKind::Protocol(proto_decl), Span::default()),
+            crate::parser::ast::Declaration::new(crate::parser::ast::DeclarationKind::Function(func), Span::default()),
+        ],
+        None,
+        Span::default(),
+    );
+
+    let mut analyzer = SemanticAnalyzer::new();
+    let res = analyzer.analyze(&program);
+    if let Err(e) = &res {
+        panic!("analyze error: {:?}\ncontext errors: {:?}", e, analyzer.errors());
+    }
+    assert!(!analyzer.has_errors());
+}
+
+#[test]
+fn test_functor_parameter_call_type_mismatch() {
+    let proto_sig = crate::parser::ast::ProtocolMethodSignature {
+        name: "invoke".into(),
+        parameters: vec![crate::parser::ast::Parameter::new(
+            "x".into(),
+            Some(crate::parser::ast::TypeReference::new("Number".into(), Span::default())),
+            Span::default(),
+        )],
+        return_type: crate::parser::ast::TypeReference::new("Number".into(), Span::default()),
+        span: Span::default(),
+    };
+
+    let proto_decl = crate::parser::ast::ProtocolDeclaration {
+        name: "Callable2".into(),
+        extends: vec![],
+        members: vec![proto_sig],
+    };
+
+    // Function calls f("not a number") where f: Callable2
+    let func = crate::parser::ast::FunctionDeclaration {
+        name: "use_functor_bad".into(),
+        parameters: vec![crate::parser::ast::Parameter::new(
+            "f".into(),
+            Some(crate::parser::ast::TypeReference::new("Callable2".into(), Span::default())),
+            Span::default(),
+        )],
+        return_type: Some(crate::parser::ast::TypeReference::new("Number".into(), Span::default())),
+        body: crate::parser::ast::Expr::call(
+            crate::parser::ast::Expr::identifier("f".into(), Span::default()),
+            vec![crate::parser::ast::Expr::literal(crate::parser::ast::Literal::String("x".into()), Span::default())],
+            Span::default(),
+        ),
+    };
+
+    let program = crate::parser::ast::Program::new(
+        vec![
+            crate::parser::ast::Declaration::new(crate::parser::ast::DeclarationKind::Protocol(proto_decl), Span::default()),
+            crate::parser::ast::Declaration::new(crate::parser::ast::DeclarationKind::Function(func), Span::default()),
+        ],
+        None,
+        Span::default(),
+    );
+
+    let mut analyzer = SemanticAnalyzer::new();
+    let res = analyzer.analyze(&program);
+    assert!(res.is_err());
+    // Ensure the recorded error is an ArgumentTypeMismatch
+    let err = res.unwrap_err();
+    match err {
+        SemanticError::ArgumentTypeMismatch { .. } => {}
+        other => panic!("Expected ArgumentTypeMismatch, got {:?}", other),
+    }
+}

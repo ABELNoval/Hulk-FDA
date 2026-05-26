@@ -248,6 +248,55 @@ impl SemanticAnalyzer {
             }
         }
 
+        // Third pass: analyze function bodies with parameter scopes so that
+        // parameters annotated with types/protocols are available during body analysis.
+        for decl in &_program.declarations {
+            if let DeclarationKind::Function(func) = &decl.kind {
+                self.context.symbols.enter_scope();
+
+                // declare parameters as Parameter symbols with their annotations
+                for p in &func.parameters {
+                    let param_sym = crate::semantic::symbol_table::SymbolInfo::Parameter {
+                        name: p.name.clone(),
+                        type_ref: p.annotation.clone(),
+                        span: p.span.clone(),
+                    };
+                    if let Err(e) = self.context.symbols.declare(param_sym) {
+                        self.report_error(e);
+                    }
+                }
+
+                // analyze function body
+                let body_t = match self.analyze_expr(&func.body) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.report_error(e.clone());
+                        NormalizedType::Unknown
+                    }
+                };
+
+                // if function has annotated return type, validate compatibility
+                if let Some(ret_ann) = &func.return_type {
+                    match self.context.types.validate_type_reference(ret_ann) {
+                        Ok(expected_t) => {
+                            if body_t != NormalizedType::Unknown
+                                && !self.context.types.is_compatible(&body_t, &expected_t)
+                            {
+                                self.report_error(SemanticError::ReturnTypeMismatch {
+                                    function: func.name.clone(),
+                                    expected: expected_t.to_string(),
+                                    found: body_t.to_string(),
+                                });
+                            }
+                        }
+                        Err(e) => self.report_error(e),
+                    }
+                }
+
+                self.context.symbols.exit_scope();
+            }
+        }
+
         Ok(())
     }
 
@@ -270,7 +319,8 @@ impl SemanticAnalyzer {
             }
             ExprKind::Identifier(name) => match self.context.symbols.lookup(name.as_str()) {
                 Some(sym) => match sym {
-                    crate::semantic::symbol_table::SymbolInfo::Variable { type_ref, .. } => {
+                    crate::semantic::symbol_table::SymbolInfo::Variable { type_ref, .. }
+                    | crate::semantic::symbol_table::SymbolInfo::Parameter { type_ref, .. } => {
                         if let Some(tr) = type_ref {
                             match self.context.types.validate_type_reference(&tr) {
                                 Ok(nt) => Ok(nt),
@@ -301,10 +351,17 @@ impl SemanticAnalyzer {
                         arg_types.push(self.analyze_expr(a)?);
                     }
 
-                    // Try to obtain expected params from symbol table
-                    let expected_params = match self.context.symbols.lookup(name.as_str()) {
+                    // Try to obtain expected params/return from symbol table or from a
+                    // protocol named in the variable's annotation (e.g., a functor protocol
+                    // that defines `invoke(...)`). This allows calling parameters that are
+                    // typed as a protocol with an `invoke` method.
+                    let mut expected_params: Option<Vec<(String, NormalizedType)>> = None;
+                    let mut expected_return: Option<NormalizedType> = None;
+
+                    match self.context.symbols.lookup(name.as_str()) {
                         Some(crate::semantic::symbol_table::SymbolInfo::Function {
                             parameters,
+                            return_type,
                             ..
                         }) => {
                             let mut params = Vec::new();
@@ -319,20 +376,54 @@ impl SemanticAnalyzer {
                                 };
                                 params.push((p.name.clone(), t));
                             }
-                            Some(params)
+                            expected_params = Some(params);
+                            expected_return = return_type
+                                .as_ref()
+                                .and_then(|rt| self.context.types.validate_type_reference(rt).ok());
                         }
-                        _ => None,
-                    };
-
-                    let expected_return = match self.context.symbols.lookup(name.as_str()) {
-                        Some(crate::semantic::symbol_table::SymbolInfo::Function {
-                            return_type,
+                        Some(crate::semantic::symbol_table::SymbolInfo::Variable {
+                            type_ref,
                             ..
-                        }) => return_type
-                            .as_ref()
-                            .and_then(|rt| self.context.types.validate_type_reference(rt).ok()),
-                        _ => None,
-                    };
+                        })
+                        | Some(crate::semantic::symbol_table::SymbolInfo::Parameter {
+                            type_ref,
+                            ..
+                        }) => {
+                            if let Some(tr) = type_ref
+                                && let crate::parser::ast::TypeReferenceKind::Named(type_name) =
+                                    &tr.kind
+                            {
+                                // If the annotation names a protocol, try to extract an
+                                // `invoke` method signature from it.
+                                if let Some(proto) = self.context.types.get_protocol(type_name)
+                                    && let Some(invoke_sig) =
+                                        proto.members.iter().find(|m| m.name == "invoke")
+                                {
+                                    let mut params = Vec::new();
+                                    for p in &invoke_sig.parameters {
+                                        let t = if let Some(ann) = &p.annotation {
+                                            self.context
+                                                .types
+                                                .validate_type_reference(ann)
+                                                .unwrap_or(NormalizedType::Unknown)
+                                        } else {
+                                            NormalizedType::Unknown
+                                        };
+                                        params.push((p.name.clone(), t));
+                                    }
+                                    expected_params = Some(params);
+                                    // return type for invoke is required in protocols
+                                    expected_return = Some(
+                                        self.context
+                                            .types
+                                            .validate_type_reference(&invoke_sig.return_type)
+                                            .unwrap_or(NormalizedType::Unknown),
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
 
                     match self.context.expression_checker.check_function_call(
                         name,

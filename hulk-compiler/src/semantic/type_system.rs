@@ -260,7 +260,10 @@ impl TypeEnvironment {
 
     /// Comprueba si el entorno conoce un tipo (builtin o definido por el usuario)
     pub fn has_type(&self, name: &str) -> bool {
-        Self::is_builtin_name(name) || self.user_types.contains_key(name)
+        // Also treat protocols as valid type-like references for annotations
+        Self::is_builtin_name(name)
+            || self.user_types.contains_key(name)
+            || self.protocols.contains_key(name)
     }
 
     /// Busca un protocolo en el entorno
@@ -484,10 +487,16 @@ impl TypeEnvironment {
     ) -> Result<NormalizedType, SemanticError> {
         match &tr.kind {
             TypeReferenceKind::Named(name) => {
-                if self.has_type(name) {
-                    Ok(NormalizedType::Named(name.clone()))
-                } else {
-                    Err(SemanticError::UndeclaredType { name: name.clone() })
+                if !self.has_type(name) {
+                    return Err(SemanticError::UndeclaredType { name: name.clone() });
+                }
+
+                // Map builtin names to their NormalizedType variant
+                match name.as_str() {
+                    "Number" => Ok(NormalizedType::Number),
+                    "String" => Ok(NormalizedType::String),
+                    "Boolean" => Ok(NormalizedType::Boolean),
+                    _ => Ok(NormalizedType::Named(name.clone())),
                 }
             }
             TypeReferenceKind::Iterable(inner) => {

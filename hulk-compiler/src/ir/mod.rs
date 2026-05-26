@@ -26,10 +26,10 @@ pub use block::{BasicBlock, BasicBlockId};
 #[allow(unused_imports)]
 pub use instruction::{IRBinaryOp, IRInstruction, IRInstructionKind, IROperand, IRUnaryOp};
 #[allow(unused_imports)]
-pub use lowering::{IRLoweringContext, IRLoweringError, IRLoweringResult};
+pub use lowering::{IRBuilder, IRLoweringContext, IRLoweringError, IRLoweringResult};
 #[allow(unused_imports)]
 pub use module::{IRFunction, IRModule};
 #[allow(unused_imports)]
-pub use naming::IRNaming;
+pub use naming::{IRNaming, SSAValueGenerator};
 #[allow(unused_imports)]
 pub use value::{IRValue, IRValueId, IRValueKind};

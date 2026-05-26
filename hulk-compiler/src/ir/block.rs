@@ -48,4 +48,28 @@ impl BasicBlock {
             self.successors.push(successor);
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.instructions.is_empty()
+    }
+
+    pub fn instruction_count(&self) -> usize {
+        self.instructions.len()
+    }
+
+    pub fn fmt_display(&self, indent: usize) -> String {
+        let indent_str = " ".repeat(indent);
+        let next_indent_str = " ".repeat(indent + 2);
+        let mut result = format!("{}Block {}:\n", indent_str, self.id.0);
+
+        for instr in &self.instructions {
+            result.push_str(&format!(
+                "{}{}\n",
+                next_indent_str,
+                instr.fmt_display()
+            ));
+        }
+
+        result
+    }
 }

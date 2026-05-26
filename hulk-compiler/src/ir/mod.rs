@@ -22,7 +22,7 @@ pub mod test_support;
 mod tests;
 
 #[allow(unused_imports)]
-pub use block::{BasicBlock, BasicBlockId};
+pub use block::{BasicBlock, BasicBlockId, ControlFlowGraph};
 #[allow(unused_imports)]
 pub use instruction::{IRBinaryOp, IRInstruction, IRInstructionKind, IROperand, IRUnaryOp};
 #[allow(unused_imports)]

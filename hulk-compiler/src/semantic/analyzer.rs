@@ -88,6 +88,12 @@ impl Default for SemanticContext {
 /// 3. Recopilación de errores
 pub struct SemanticAnalyzer {
     context: SemanticContext,
+    /// During analysis of a function body we may collect observed call signatures
+    /// for parameters/variables without annotations. This map stores for the
+    /// current function (if any) a mapping from identifier -> list of observed
+    /// argument type vectors (each call's argument types).
+    current_inferred_signatures:
+        Option<std::collections::HashMap<String, Vec<Vec<NormalizedType>>>>,
 }
 
 impl SemanticAnalyzer {
@@ -96,7 +102,10 @@ impl SemanticAnalyzer {
         let mut context = SemanticContext::new();
         // TODO: Declarar builtins (print, sqrt, sin, cos, log, exp, rand)
         context.symbols.declare_builtins();
-        Self { context }
+        Self {
+            context,
+            current_inferred_signatures: None,
+        }
     }
 
     /// Retorna una referencia al contexto
@@ -266,7 +275,11 @@ impl SemanticAnalyzer {
                     }
                 }
 
-                // analyze function body
+                // prepare inference map for this function body
+                self.current_inferred_signatures = Some(std::collections::HashMap::new());
+
+                // analyze function body (during this call we'll collect observed
+                // call argument types for unannotated parameters)
                 let body_t = match self.analyze_expr(&func.body) {
                     Ok(t) => t,
                     Err(e) => {
@@ -274,6 +287,9 @@ impl SemanticAnalyzer {
                         NormalizedType::Unknown
                     }
                 };
+
+                // clear inference state
+                self.current_inferred_signatures = None;
 
                 // if function has annotated return type, validate compatibility
                 if let Some(ret_ann) = &func.return_type {
@@ -419,6 +435,28 @@ impl SemanticAnalyzer {
                                             .validate_type_reference(&invoke_sig.return_type)
                                             .unwrap_or(NormalizedType::Unknown),
                                     );
+                                }
+                            } else {
+                                // No annotation: try to use inferred signature (collected
+                                // during this function body's analysis). If none exists yet,
+                                // record the observed argument types so subsequent calls
+                                // can be checked against the first observed signature.
+                                if let Some(map) = &mut self.current_inferred_signatures {
+                                    let entry = map.entry(name.clone()).or_insert_with(Vec::new);
+                                    // push the observed arg types for later unification
+                                    entry.push(arg_types.clone());
+
+                                    // If this is the first observed call, use it to build
+                                    // an expected_params vector for immediate checking.
+                                    if let Some(first) = entry.first() {
+                                        let mut params = Vec::new();
+                                        for (i, t) in first.iter().enumerate() {
+                                            params.push((format!("arg{}", i), t.clone()));
+                                        }
+                                        expected_params = Some(params);
+                                        // return type remains unknown in this heuristic
+                                        expected_return = None;
+                                    }
                                 }
                             }
                         }

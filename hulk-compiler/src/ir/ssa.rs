@@ -66,7 +66,7 @@ fn place_phi_nodes(function: &mut crate::ir::module::IRFunction) {
                     }
                 }
             }
-            let mut new_set = new_dom.unwrap_or_else(HashSet::new);
+            let mut new_set = new_dom.unwrap_or_default();
             new_set.insert(b.clone());
             if new_set != *dom.get(b).unwrap() {
                 dom.insert(b.clone(), new_set);
@@ -114,7 +114,11 @@ fn place_phi_nodes(function: &mut crate::ir::module::IRFunction) {
 
     // propagate from children up
     // process nodes in post-order of dominator tree
-    fn post_order(node: &BasicBlockId, children: &HashMap<BasicBlockId, Vec<BasicBlockId>>, order: &mut Vec<BasicBlockId>) {
+    fn post_order(
+        node: &BasicBlockId,
+        children: &HashMap<BasicBlockId, Vec<BasicBlockId>>,
+        order: &mut Vec<BasicBlockId>,
+    ) {
         if let Some(ch) = children.get(node) {
             for c in ch {
                 post_order(c, children, order);
@@ -149,10 +153,14 @@ fn place_phi_nodes(function: &mut crate::ir::module::IRFunction) {
     for b in &blocks {
         if let Some(block) = function.block(b) {
             for instr in &block.instructions {
-                if let IRInstructionKind::Assign { target: _, value: _, original } = &instr.kind {
-                    if let Some(var) = original {
-                        defsites.entry(var.clone()).or_default().insert(b.clone());
-                    }
+                if let IRInstructionKind::Assign {
+                    target: _,
+                    value: _,
+                    original,
+                } = &instr.kind
+                    && let Some(var) = original
+                {
+                    defsites.entry(var.clone()).or_default().insert(b.clone());
                 }
             }
         }
@@ -172,9 +180,18 @@ fn place_phi_nodes(function: &mut crate::ir::module::IRFunction) {
                     if !has_phi.contains(y) {
                         // insert phi in block y
                         if let Some(block_mut) = function.block_mut(y) {
-                            let incoming = block_mut.predecessors.iter().map(|p| (IRValueId::new(var.clone()), p.clone())).collect();
-                            let phi_target = crate::ir::value::IRValueId::new("%phi".to_string() + &y.0);
-                            let phi_instr = IRInstruction::new(IRInstructionKind::Phi { target: phi_target.clone(), incoming, original: Some(var.clone()) });
+                            let incoming = block_mut
+                                .predecessors
+                                .iter()
+                                .map(|p| (IRValueId::new(var.clone()), p.clone()))
+                                .collect();
+                            let phi_target =
+                                crate::ir::value::IRValueId::new("%phi".to_string() + &y.0);
+                            let phi_instr = IRInstruction::new(IRInstructionKind::Phi {
+                                target: phi_target.clone(),
+                                incoming,
+                                original: Some(var.clone()),
+                            });
                             block_mut.instructions.insert(0, phi_instr);
                         }
                         has_phi.insert(y.clone());
@@ -227,7 +244,11 @@ fn renaming_for_function(function: &mut IRFunction) {
         for instr in &mut block.instructions {
             // remap uses inside the instruction
             match &mut instr.kind {
-                IRInstructionKind::Assign { target: _, value, original: _ } => {
+                IRInstructionKind::Assign {
+                    target: _,
+                    value,
+                    original: _,
+                } => {
                     *value = remap_operand(value, &mut map, &mut svgen);
                 }
                 IRInstructionKind::Binary { left, right, .. } => {
@@ -251,14 +272,13 @@ fn renaming_for_function(function: &mut IRFunction) {
                 IRInstructionKind::Branch { condition, .. } => {
                     *condition = remap_operand(condition, &mut map, &mut svgen);
                 }
-                IRInstructionKind::Return(opt) => {
-                    if let Some(op) = opt {
-                        *op = remap_operand(op, &mut map, &mut svgen);
-                    }
+                IRInstructionKind::Return(Some(op)) => {
+                    *op = remap_operand(op, &mut map, &mut svgen);
                 }
+                IRInstructionKind::Return(None) => {}
                 IRInstructionKind::Call {
                     arguments,
-                    target: _ ,
+                    target: _,
                     original: _,
                     ..
                 } => {

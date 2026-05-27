@@ -65,22 +65,22 @@ impl IRFunction {
             }
 
             for instruction in &block.instructions {
-                if let Some(target) = instruction.defines_value() {
-                    if !defined_values.insert(target.0.clone()) {
-                        errors.push(format!(
-                            "Function '{}' defines SSA value '{}' more than once.",
-                            self.name, target.0
-                        ));
-                    }
+                if let Some(target) = instruction.defines_value()
+                    && !defined_values.insert(target.0.clone())
+                {
+                    errors.push(format!(
+                        "Function '{}' defines SSA value '{}' more than once.",
+                        self.name, target.0
+                    ));
                 }
 
-                if let IRInstructionKind::Phi { .. } = instruction.kind {
-                    if let Err(message) = instruction.validate_phi() {
-                        errors.push(format!(
-                            "Function '{}' block '{}': {}",
-                            self.name, block.id.0, message
-                        ));
-                    }
+                if let IRInstructionKind::Phi { .. } = instruction.kind
+                    && let Err(message) = instruction.validate_phi()
+                {
+                    errors.push(format!(
+                        "Function '{}' block '{}': {}",
+                        self.name, block.id.0, message
+                    ));
                 }
             }
 
@@ -135,7 +135,7 @@ impl IRFunction {
                                     queue.push_back(def_block.clone());
                                     let mut reachable = false;
                                     while let Some(cur) = queue.pop_front() {
-                                        if &cur == &block.id {
+                                        if cur == block.id {
                                             reachable = true;
                                             break;
                                         }
@@ -173,7 +173,7 @@ impl IRFunction {
 
     pub fn fmt_display(&self, indent: usize) -> String {
         let indent_str = " ".repeat(indent);
-        let next_indent_str = " ".repeat(indent + 2);
+        let _next_indent_str = " ".repeat(indent + 2);
 
         let params = self
             .parameters

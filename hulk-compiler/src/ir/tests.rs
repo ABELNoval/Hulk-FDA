@@ -59,7 +59,14 @@ mod tests_ir {
                 )),
                 span,
             ),
-            expected_fragments: vec!["if_then", "if_else", "if_merge", "while_cond", "while_body", "while_exit"],
+            expected_fragments: vec![
+                "if_then",
+                "if_else",
+                "if_merge",
+                "while_cond",
+                "while_body",
+                "while_exit",
+            ],
         }
     }
 
@@ -300,7 +307,11 @@ mod tests_ir {
 
     #[test]
     fn lowering_fixtures_cover_expected_ir_fragments() {
-        let fixtures = vec![arithmetic_fixture(), control_flow_fixture(), vector_fixture()];
+        let fixtures = vec![
+            arithmetic_fixture(),
+            control_flow_fixture(),
+            vector_fixture(),
+        ];
 
         for fixture in fixtures {
             let mut builder = IRBuilder::new("test");
@@ -386,8 +397,8 @@ mod tests_ir {
 
         assert_eq!(cfg.successors(&b1).unwrap(), std::slice::from_ref(&b2));
         assert_eq!(cfg.predecessors(&b2).unwrap(), std::slice::from_ref(&b1));
-        assert_eq!(cfg.successors(&b2).unwrap(), &[b3.clone()]);
-        assert_eq!(cfg.predecessors(&b3).unwrap(), &[b2.clone()]);
+        assert_eq!(cfg.successors(&b2).unwrap(), std::slice::from_ref(&b3));
+        assert_eq!(cfg.predecessors(&b3).unwrap(), std::slice::from_ref(&b2));
     }
 
     #[test]
@@ -405,10 +416,10 @@ mod tests_ir {
         assert!(succs.contains(&else_b));
 
         let then_succs = cfg.successors(&then_b).unwrap();
-        assert_eq!(then_succs, &[merge.clone()]);
+        assert_eq!(then_succs, std::slice::from_ref(&merge));
 
         let else_succs = cfg.successors(&else_b).unwrap();
-        assert_eq!(else_succs, &[merge.clone()]);
+        assert_eq!(else_succs, std::slice::from_ref(&merge));
     }
 
     #[test]
@@ -421,13 +432,13 @@ mod tests_ir {
 
         assert!(cfg.validate().is_ok());
 
-        assert_eq!(cfg.successors(&head).unwrap(), &[cond.clone()]);
+        assert_eq!(cfg.successors(&head).unwrap(), std::slice::from_ref(&cond));
 
         let cond_succs = cfg.successors(&cond).unwrap();
         assert!(cond_succs.contains(&body));
         assert!(cond_succs.contains(&exit));
 
-        assert_eq!(cfg.successors(&body).unwrap(), &[cond.clone()]);
+        assert_eq!(cfg.successors(&body).unwrap(), std::slice::from_ref(&cond));
     }
 
     #[test]

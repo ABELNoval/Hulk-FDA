@@ -54,6 +54,7 @@ pub enum IRInstructionKind {
     Assign {
         target: IRValueId,
         value: IROperand,
+        original: Option<String>,
     },
     Binary {
         target: IRValueId,
@@ -69,6 +70,7 @@ pub enum IRInstructionKind {
     Phi {
         target: IRValueId,
         incoming: Vec<(IRValueId, BasicBlockId)>,
+        original: Option<String>,
     },
     Jump {
         target: BasicBlockId,
@@ -83,6 +85,7 @@ pub enum IRInstructionKind {
         target: Option<IRValueId>,
         callee: String,
         arguments: Vec<IROperand>,
+        original: Option<String>,
     },
     Nop,
 }
@@ -128,6 +131,54 @@ impl IRInstruction {
                 .any(|arg| operand_uses_value(arg, value_id)),
             _ => false,
         }
+    }
+
+    pub fn used_values(&self) -> Vec<IRValueId> {
+        let mut vals = Vec::new();
+        match &self.kind {
+            IRInstructionKind::Assign { value, .. } => {
+                if let IROperand::Value(id) = value {
+                    vals.push(id.clone());
+                }
+            }
+            IRInstructionKind::Binary { left, right, .. } => {
+                if let IROperand::Value(l) = left {
+                    vals.push(l.clone());
+                }
+                if let IROperand::Value(r) = right {
+                    vals.push(r.clone());
+                }
+            }
+            IRInstructionKind::Unary { operand, .. } => {
+                if let IROperand::Value(o) = operand {
+                    vals.push(o.clone());
+                }
+            }
+            IRInstructionKind::Phi { incoming, .. } => {
+                for (v, _) in incoming {
+                    vals.push(v.clone());
+                }
+            }
+            IRInstructionKind::Branch { condition, .. } => {
+                if let IROperand::Value(c) = condition {
+                    vals.push(c.clone());
+                }
+            }
+            IRInstructionKind::Return(Some(op)) => {
+                if let IROperand::Value(v) = op {
+                    vals.push(v.clone());
+                }
+            }
+            IRInstructionKind::Call { arguments, .. } => {
+                for arg in arguments {
+                    if let IROperand::Value(a) = arg {
+                        vals.push(a.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+        vals
     }
 
     pub fn is_terminator(&self) -> bool {
@@ -224,7 +275,11 @@ impl IRInstruction {
 
     pub fn validate_phi(&self) -> Result<(), String> {
         match &self.kind {
-            IRInstructionKind::Phi { incoming, target } => {
+            IRInstructionKind::Phi {
+                incoming,
+                target,
+                original: _,
+            } => {
                 if incoming.len() < 2 {
                     return Err(format!(
                         "Phi node {:?} must have at least 2 incoming values, has {}",
@@ -252,7 +307,11 @@ impl IRInstruction {
 
     pub fn fmt_display(&self) -> String {
         match &self.kind {
-            IRInstructionKind::Assign { target, value } => {
+            IRInstructionKind::Assign {
+                target,
+                value,
+                original: _,
+            } => {
                 format!("{} = {}", target.0, value.fmt_display())
             }
             IRInstructionKind::Binary {
@@ -294,7 +353,11 @@ impl IRInstruction {
                 };
                 format!("{} = {}{}", target.0, op_str, operand.fmt_display())
             }
-            IRInstructionKind::Phi { target, incoming } => {
+            IRInstructionKind::Phi {
+                target,
+                incoming,
+                original: _,
+            } => {
                 let values = incoming
                     .iter()
                     .map(|(v, b)| format!("{}:{}", v.0, b.0))
@@ -325,6 +388,7 @@ impl IRInstruction {
                 target,
                 callee,
                 arguments,
+                original: _,
             } => {
                 let args = arguments
                     .iter()

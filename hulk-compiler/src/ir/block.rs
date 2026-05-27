@@ -63,11 +63,7 @@ impl BasicBlock {
         let mut result = format!("{}Block {}:\n", indent_str, self.id.0);
 
         for instr in &self.instructions {
-            result.push_str(&format!(
-                "{}{}\n",
-                next_indent_str,
-                instr.fmt_display()
-            ));
+            result.push_str(&format!("{}{}\n", next_indent_str, instr.fmt_display()));
         }
 
         result
@@ -91,11 +87,11 @@ impl ControlFlowGraph {
     pub fn create_block(&mut self, name: impl Into<String>) -> BasicBlockId {
         let id = BasicBlockId::new(name);
         let block = BasicBlock::new(id.0.clone());
-        
+
         if self.entry.is_none() {
             self.entry = Some(id.clone());
         }
-        
+
         self.blocks.insert(id.clone(), block);
         id
     }
@@ -185,7 +181,10 @@ impl ControlFlowGraph {
         if !self.blocks.is_empty() {
             if let Some(entry) = &self.entry {
                 if !self.blocks.contains_key(entry) {
-                    errors.push(format!("Entry block '{}' does not exist in the graph.", entry.0));
+                    errors.push(format!(
+                        "Entry block '{}' does not exist in the graph.",
+                        entry.0
+                    ));
                 }
             } else {
                 errors.push("Control flow graph has blocks but no entry block is set.".to_string());
@@ -203,7 +202,10 @@ impl ControlFlowGraph {
                         ));
                     }
                 } else {
-                    errors.push(format!("Block '{}' has non-existent predecessor '{}'.", id.0, pred.0));
+                    errors.push(format!(
+                        "Block '{}' has non-existent predecessor '{}'.",
+                        id.0, pred.0
+                    ));
                 }
             }
 
@@ -217,7 +219,23 @@ impl ControlFlowGraph {
                         ));
                     }
                 } else {
-                    errors.push(format!("Block '{}' has non-existent successor '{}'.", id.0, succ.0));
+                    errors.push(format!(
+                        "Block '{}' has non-existent successor '{}'.",
+                        id.0, succ.0
+                    ));
+                }
+            }
+        }
+
+        if let Some(entry) = &self.entry {
+            let reachable: std::collections::HashSet<_> =
+                self.dfs_traversal().into_iter().collect();
+            for id in self.blocks.keys() {
+                if !reachable.contains(id) {
+                    errors.push(format!(
+                        "Block '{}' is unreachable from entry '{}'.",
+                        id.0, entry.0
+                    ));
                 }
             }
         }

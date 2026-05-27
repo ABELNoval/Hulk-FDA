@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod tests_ir {
     use crate::ir::instruction::{IRBinaryOp, IRInstruction, IRInstructionKind, IROperand};
     use crate::ir::lowering::IRBuilder;
     use crate::ir::test_support::{
@@ -11,6 +11,76 @@ mod tests {
 
     fn test_span() -> Span {
         Span::new("test".to_string(), 1, 1, 1, 1)
+    }
+
+    struct LoweringFixture {
+        program: Program,
+        expected_fragments: Vec<&'static str>,
+    }
+
+    fn arithmetic_fixture() -> LoweringFixture {
+        let span = test_span();
+        LoweringFixture {
+            program: Program::new(
+                Vec::new(),
+                Some(Expr::binary(
+                    Expr::literal(Literal::Number(1.0), span.clone()),
+                    BinaryOperator::Add,
+                    Expr::literal(Literal::Number(2.0), span.clone()),
+                    span.clone(),
+                )),
+                span,
+            ),
+            expected_fragments: vec!["+", "return"],
+        }
+    }
+
+    fn control_flow_fixture() -> LoweringFixture {
+        let span = test_span();
+        LoweringFixture {
+            program: Program::new(
+                Vec::new(),
+                Some(Expr::block(
+                    vec![
+                        Expr::if_expr(
+                            Expr::literal(Literal::Boolean(true), span.clone()),
+                            Expr::literal(Literal::Number(10.0), span.clone()),
+                            Vec::new(),
+                            Some(Expr::literal(Literal::Number(20.0), span.clone())),
+                            span.clone(),
+                        ),
+                        Expr::while_expr(
+                            Expr::literal(Literal::Boolean(true), span.clone()),
+                            Expr::literal(Literal::Number(1.0), span.clone()),
+                            span.clone(),
+                        ),
+                    ],
+                    span.clone(),
+                )),
+                span,
+            ),
+            expected_fragments: vec!["if_then", "if_else", "if_merge", "while_cond", "while_body", "while_exit"],
+        }
+    }
+
+    fn vector_fixture() -> LoweringFixture {
+        let span = test_span();
+        LoweringFixture {
+            program: Program::new(
+                Vec::new(),
+                Some(Expr::vector_comprehension(
+                    Expr::literal(Literal::Number(2.0), span.clone()),
+                    "item".to_string(),
+                    Expr::vector_literal(
+                        vec![Expr::literal(Literal::Number(1.0), span.clone())],
+                        span.clone(),
+                    ),
+                    span.clone(),
+                )),
+                span,
+            ),
+            expected_fragments: vec!["call vector_literal", "call vector_comprehension"],
+        }
     }
 
     #[test]
@@ -67,6 +137,21 @@ mod tests {
     }
 
     #[test]
+    fn value_constructors_set_expected_kinds() {
+        let temp = crate::ir::IRValue::temporary("%t0");
+        let parameter = crate::ir::IRValue::parameter("x");
+        let constant = crate::ir::IRValue::constant("c0");
+        let named = crate::ir::IRValue::named("field");
+        let phi = crate::ir::IRValue::phi("%p0");
+
+        assert!(temp.is_temporary());
+        assert!(parameter.is_parameter());
+        assert!(constant.is_constant());
+        assert!(named.kind == IRValueKind::Named);
+        assert!(phi.is_phi());
+    }
+
+    #[test]
     fn instruction_defines_value_for_assignment() {
         let instruction = IRInstruction::new(IRInstructionKind::Binary {
             target: crate::ir::IRValueId::new("%t0"),
@@ -101,10 +186,12 @@ mod tests {
         block.push_instruction(IRInstruction::new(IRInstructionKind::Assign {
             target: crate::ir::IRValueId::new("%t0"),
             value: IROperand::Float(1.0),
+            original: None,
         }));
         block.push_instruction(IRInstruction::new(IRInstructionKind::Assign {
             target: crate::ir::IRValueId::new("%t1"),
             value: IROperand::Float(2.0),
+            original: None,
         }));
         block.push_instruction(IRInstruction::new(IRInstructionKind::Binary {
             target: crate::ir::IRValueId::new("%t2"),
@@ -212,6 +299,78 @@ mod tests {
     }
 
     #[test]
+    fn lowering_fixtures_cover_expected_ir_fragments() {
+        let fixtures = vec![arithmetic_fixture(), control_flow_fixture(), vector_fixture()];
+
+        for fixture in fixtures {
+            let mut builder = IRBuilder::new("test");
+            let module = builder
+                .lower_program(&fixture.program)
+                .expect("lowering must succeed");
+
+            let rendered = module.fmt_display();
+            for fragment in fixture.expected_fragments {
+                assert!(
+                    rendered.contains(fragment),
+                    "expected fragment `{}` not found in rendered module:\n{}",
+                    fragment,
+                    rendered
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lowers_vector_literal_as_intrinsic_call() {
+        let span = test_span();
+        let program = Program::new(
+            Vec::new(),
+            Some(Expr::vector_literal(
+                vec![
+                    Expr::literal(Literal::Number(1.0), span.clone()),
+                    Expr::literal(Literal::Number(2.0), span.clone()),
+                ],
+                span.clone(),
+            )),
+            span.clone(),
+        );
+
+        let mut builder = IRBuilder::new("test");
+        let module = builder
+            .lower_program(&program)
+            .expect("lowering must succeed");
+
+        let rendered = module.fmt_display();
+        assert!(rendered.contains("call vector_literal"));
+    }
+
+    #[test]
+    fn lowers_vector_comprehension_as_intrinsic_call() {
+        let span = test_span();
+        let program = Program::new(
+            Vec::new(),
+            Some(Expr::vector_comprehension(
+                Expr::literal(Literal::Number(2.0), span.clone()),
+                "item".to_string(),
+                Expr::vector_literal(
+                    vec![Expr::literal(Literal::Number(1.0), span.clone())],
+                    span.clone(),
+                ),
+                span.clone(),
+            )),
+            span.clone(),
+        );
+
+        let mut builder = IRBuilder::new("test");
+        let module = builder
+            .lower_program(&program)
+            .expect("lowering must succeed");
+
+        let rendered = module.fmt_display();
+        assert!(rendered.contains("call vector_comprehension"));
+    }
+
+    #[test]
     fn cfg_basic_linking_and_validation() {
         use crate::ir::block::ControlFlowGraph;
         let mut cfg = ControlFlowGraph::new();
@@ -299,5 +458,74 @@ mod tests {
         assert!(bfs[1] == b2 || bfs[1] == b3);
         assert!(bfs[2] == b2 || bfs[2] == b3);
         assert_eq!(bfs[3], b4);
+    }
+
+    #[test]
+    fn cfg_validate_rejects_unreachable_blocks() {
+        use crate::ir::block::ControlFlowGraph;
+        let mut cfg = ControlFlowGraph::new();
+
+        let entry = cfg.create_block("entry");
+        let _orphan = cfg.create_block("orphan");
+
+        let errors = cfg
+            .validate()
+            .expect_err("unreachable blocks must fail validation");
+        assert!(errors.iter().any(|error| error.contains("unreachable")));
+        assert_eq!(cfg.entry, Some(entry));
+    }
+
+    #[test]
+    fn module_validate_accepts_well_formed_ir() {
+        let mut module = IRModule::new("sample");
+        let mut function = IRFunction::new("main");
+        let mut block = BasicBlock::new("entry");
+
+        block.push_instruction(IRInstruction::new(IRInstructionKind::Assign {
+            target: crate::ir::IRValueId::new("%t0"),
+            value: IROperand::Integer(1),
+            original: None,
+        }));
+        block.push_instruction(IRInstruction::new(IRInstructionKind::Return(Some(
+            IROperand::Value(crate::ir::IRValueId::new("%t0")),
+        ))));
+
+        function.add_block(block);
+        module.add_function(function);
+
+        assert!(module.validate().is_ok());
+    }
+
+    #[test]
+    fn module_validate_rejects_duplicate_ssa_definitions() {
+        let mut module = IRModule::new("sample");
+        let mut function = IRFunction::new("main");
+        let mut block = BasicBlock::new("entry");
+
+        block.push_instruction(IRInstruction::new(IRInstructionKind::Assign {
+            target: crate::ir::IRValueId::new("%t0"),
+            value: IROperand::Integer(1),
+            original: None,
+        }));
+        block.push_instruction(IRInstruction::new(IRInstructionKind::Assign {
+            target: crate::ir::IRValueId::new("%t0"),
+            value: IROperand::Integer(2),
+            original: None,
+        }));
+        block.push_instruction(IRInstruction::new(IRInstructionKind::Return(Some(
+            IROperand::Value(crate::ir::IRValueId::new("%t0")),
+        ))));
+
+        function.add_block(block);
+        module.add_function(function);
+
+        let errors = module
+            .validate()
+            .expect_err("duplicate SSA definitions must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("defines SSA value '%t0' more than once"))
+        );
     }
 }

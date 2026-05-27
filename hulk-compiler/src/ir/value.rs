@@ -43,6 +43,26 @@ impl IRValue {
         }
     }
 
+    pub fn temporary(id: impl Into<String>) -> Self {
+        Self::new(id, IRValueKind::Temporary)
+    }
+
+    pub fn parameter(id: impl Into<String>) -> Self {
+        Self::new(id, IRValueKind::Parameter)
+    }
+
+    pub fn constant(id: impl Into<String>) -> Self {
+        Self::new(id, IRValueKind::Constant)
+    }
+
+    pub fn named(id: impl Into<String>) -> Self {
+        Self::new(id, IRValueKind::Named)
+    }
+
+    pub fn phi(id: impl Into<String>) -> Self {
+        Self::new(id, IRValueKind::Phi)
+    }
+
     pub fn with_type(mut self, ty: impl Into<String>) -> Self {
         self.ty = Some(ty.into());
         self

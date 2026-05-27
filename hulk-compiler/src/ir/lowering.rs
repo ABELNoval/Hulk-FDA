@@ -325,14 +325,17 @@ impl IRBuilder {
         parameter: &Parameter,
         index: usize,
     ) -> Result<IRValue, IRLoweringError> {
-        let mut value = IRValue::new(parameter.name.clone(), IRValueKind::Parameter);
+        let parameter_name = if parameter.name.is_empty() {
+            IRNaming::parameter_name(index)
+        } else {
+            parameter.name.clone()
+        };
+
+        let mut value = IRValue::parameter(parameter_name).with_span(parameter.span.clone());
         value.ty = parameter
             .annotation
             .as_ref()
             .map(|type_ref| type_ref.display_name());
-        if value.id.0.is_empty() {
-            value.id = IRValueId::new(IRNaming::parameter_name(index));
-        }
         Ok(value)
     }
 
@@ -350,6 +353,7 @@ impl IRBuilder {
         self.emit(IRInstruction::new(IRInstructionKind::Assign {
             target: target.clone(),
             value: IROperand::Value(value_id.clone()),
+            original: None,
         }))?;
         self.define_variable(&variable.name, target.clone());
         Ok(target)
@@ -615,6 +619,7 @@ impl IRBuilder {
                 self.emit(IRInstruction::new(IRInstructionKind::Assign {
                     target: assigned.clone(),
                     value: IROperand::Value(value_id),
+                    original: Some(name.clone()),
                 }))?;
                 self.define_variable(name, assigned.clone());
                 Ok(assigned)
@@ -713,6 +718,7 @@ impl IRBuilder {
         self.emit(IRInstruction::new(IRInstructionKind::Phi {
             target: phi_target.clone(),
             incoming: vec![(then_value, then_block), (else_value, else_block)],
+            original: None,
         }))?;
 
         Ok(phi_target)
@@ -856,6 +862,7 @@ impl IRBuilder {
         self.emit(IRInstruction::new(IRInstructionKind::Assign {
             target: target.clone(),
             value: IROperand::Value(value_id),
+            original: None,
         }))?;
         self.define_variable(name, target.clone());
 
@@ -1023,6 +1030,7 @@ impl IRBuilder {
             target: Some(target.clone()),
             callee: callee.to_string(),
             arguments: arguments.into_iter().map(IROperand::Value).collect(),
+            original: None,
         }))?;
         Ok(target)
     }
@@ -1037,6 +1045,7 @@ impl IRBuilder {
         self.emit(IRInstruction::new(IRInstructionKind::Assign {
             target: target.clone(),
             value: operand,
+            original: None,
         }))?;
         Ok(target)
     }

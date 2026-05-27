@@ -17,7 +17,7 @@ impl LlvmTextBackend {
 
     fn render_operand(&self, operand: &IROperand) -> String {
         match operand {
-            IROperand::Value(id) => format!("%{}", id.0),
+            IROperand::Value(id) => format!("%{}", id.0.trim_start_matches('%')),
             IROperand::Integer(value) => value.to_string(),
             IROperand::Float(value) => {
                 // LLVM floats must be formatted in IEEE 754 hexadecimal to ensure precision
@@ -139,6 +139,14 @@ impl LlvmTextBackend {
                     IRInstructionKind::Phi {
                         target, incoming, ..
                     } => {
+                        if incoming.is_empty() {
+                            return Err(CodegenError::UnsupportedInstruction {
+                                function: function.name.clone(),
+                                block: block.id.0.clone(),
+                                message: format!("phi node for target '{}' has no incoming edges", target.0),
+                            });
+                        }
+                        
                         let values = incoming
                             .iter()
                             .map(|(value, block)| {
@@ -150,7 +158,8 @@ impl LlvmTextBackend {
                             })
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!("  ; {} = phi {}", target.0, values)
+                        // TODO: Support precise types. Defaulting to i64.
+                        format!("  {} = phi i64 {}", target.0, values)
                     }
                     IRInstructionKind::Jump { target } => format!("  br label %{}", target.0),
                     IRInstructionKind::Branch {
@@ -178,6 +187,14 @@ impl LlvmTextBackend {
                             .function(callee)
                             .map(|f| self.render_type(f.return_type.as_deref()))
                             .unwrap_or("i64");
+
+                        if target.is_some() && ret_ty == "void" {
+                            return Err(CodegenError::UnsupportedInstruction {
+                                function: function.name.clone(),
+                                block: block.id.0.clone(),
+                                message: format!("cannot assign result of void function '{}'", callee),
+                            });
+                        }
 
                         let args = arguments
                             .iter()

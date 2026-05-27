@@ -19,12 +19,15 @@ impl LlvmTextBackend {
         match operand {
             IROperand::Value(id) => format!("%{}", id.0),
             IROperand::Integer(value) => value.to_string(),
-            IROperand::Float(value) => value.to_string(),
+            IROperand::Float(value) => {
+                // LLVM floats must be formatted in IEEE 754 hexadecimal to ensure precision
+                format!("0x{:016X}", value.to_bits())
+            }
             IROperand::Boolean(value) => {
                 if *value {
-                    "1".to_string()
+                    "true".to_string()
                 } else {
-                    "0".to_string()
+                    "false".to_string()
                 }
             }
             IROperand::Text(value) => format!("\"{}\"", value),

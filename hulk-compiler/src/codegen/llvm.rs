@@ -68,6 +68,13 @@ impl LlvmTextBackend {
             for instruction in &block.instructions {
                 let line = match &instruction.kind {
                     IRInstructionKind::Assign { target, value, .. } => {
+                        // TODO: Support precise types. Defaulting to i64 unless Boolean.
+                        let ty = match value {
+                            IROperand::Boolean(_) => "i1",
+                            IROperand::Float(_) => "double",
+                            IROperand::Text(_) => "ptr",
+                            _ => "i64",
+                        };
                         format!("  ; {} = {}", target.0, self.render_operand(value))
                     }
                     IRInstructionKind::Binary {
@@ -90,10 +97,15 @@ impl LlvmTextBackend {
                             crate::ir::IRBinaryOp::Gt => "icmp sgt",
                             crate::ir::IRBinaryOp::Ge => "icmp sge",
                         };
+                        let ty = match op {
+                            crate::ir::IRBinaryOp::And | crate::ir::IRBinaryOp::Or => "i1",
+                            _ => "i64", // default arithmetic type
+                        };
                         format!(
-                            "  ; {} = {} {}, {}",
+                            "  {} = {} {} {}, {}",
                             target.0,
                             op_name,
+                            ty,
                             self.render_operand(left),
                             self.render_operand(right)
                         )
@@ -103,16 +115,14 @@ impl LlvmTextBackend {
                         op,
                         operand,
                     } => {
-                        let op_name = match op {
-                            crate::ir::IRUnaryOp::Neg => "sub",
-                            crate::ir::IRUnaryOp::Not => "xor",
-                        };
-                        format!(
-                            "  ; {} = {} {}",
-                            target.0,
-                            op_name,
-                            self.render_operand(operand)
-                        )
+                        match op {
+                            crate::ir::IRUnaryOp::Neg => {
+                                format!("  {} = sub i64 0, {}", target.0, self.render_operand(operand))
+                            }
+                            crate::ir::IRUnaryOp::Not => {
+                                format!("  {} = xor i1 true, {}", target.0, self.render_operand(operand))
+                            }
+                        }
                     }
                     IRInstructionKind::Phi {
                         target, incoming, ..

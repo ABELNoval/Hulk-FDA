@@ -1,10 +1,17 @@
 #[cfg(test)]
 mod tests {
     use crate::ir::instruction::{IRBinaryOp, IRInstruction, IRInstructionKind, IROperand};
+    use crate::ir::lowering::IRBuilder;
     use crate::ir::test_support::{
         IrTestHarness, assert_module_eq, assert_rendered_module_contains,
     };
-    use crate::ir::{IRModule, IRNaming, IRValue, IRValueKind};
+    use crate::ir::{BasicBlock, IRFunction, IRModule, IRNaming, IRValue, IRValueKind};
+    use crate::parser::ast::{BinaryOperator, Expr, Literal, Program};
+    use crate::utils::errors::span::Span;
+
+    fn test_span() -> Span {
+        Span::new("test".to_string(), 1, 1, 1, 1)
+    }
 
     #[test]
     fn harness_builds_simple_module() {
@@ -73,6 +80,138 @@ mod tests {
     }
 
     #[test]
+    fn lowers_arithmetic_expression_and_literals_into_ir_structure() {
+        let span = test_span();
+        let expr = Expr::binary(
+            Expr::literal(Literal::Number(1.0), span.clone()),
+            BinaryOperator::Add,
+            Expr::literal(Literal::Number(2.0), span.clone()),
+            span.clone(),
+        );
+        let program = Program::new(Vec::new(), Some(expr), span.clone());
+
+        let mut builder = IRBuilder::new("test");
+        let module = builder
+            .lower_program(&program)
+            .expect("lowering must succeed");
+
+        let mut expected = IRModule::new("module::lowered");
+        let mut function = IRFunction::new("__entry");
+        let mut block = BasicBlock::new("entry");
+        block.push_instruction(IRInstruction::new(IRInstructionKind::Assign {
+            target: crate::ir::IRValueId::new("%t0"),
+            value: IROperand::Float(1.0),
+        }));
+        block.push_instruction(IRInstruction::new(IRInstructionKind::Assign {
+            target: crate::ir::IRValueId::new("%t1"),
+            value: IROperand::Float(2.0),
+        }));
+        block.push_instruction(IRInstruction::new(IRInstructionKind::Binary {
+            target: crate::ir::IRValueId::new("%t2"),
+            op: IRBinaryOp::Add,
+            left: IROperand::Value(crate::ir::IRValueId::new("%t0")),
+            right: IROperand::Value(crate::ir::IRValueId::new("%t1")),
+        }));
+        block.push_instruction(IRInstruction::new(IRInstructionKind::Return(Some(
+            IROperand::Value(crate::ir::IRValueId::new("%t2")),
+        ))));
+        function.add_block(block);
+        expected.add_function(function);
+
+        assert_module_eq(&module, &expected);
+    }
+
+    #[test]
+    fn lowers_variable_references_assignments_and_control_flow() {
+        let span = test_span();
+        let program = Program::new(
+            Vec::new(),
+            Some(Expr::block(
+                vec![
+                    Expr::let_expr(
+                        "x".to_string(),
+                        None,
+                        Some(Expr::literal(Literal::Number(1.0), span.clone())),
+                        span.clone(),
+                    ),
+                    Expr::assignment(
+                        Expr::identifier("x".to_string(), span.clone()),
+                        Expr::binary(
+                            Expr::identifier("x".to_string(), span.clone()),
+                            BinaryOperator::Add,
+                            Expr::literal(Literal::Number(2.0), span.clone()),
+                            span.clone(),
+                        ),
+                        span.clone(),
+                    ),
+                    Expr::identifier("x".to_string(), span.clone()),
+                ],
+                span.clone(),
+            )),
+            span.clone(),
+        );
+
+        let mut builder = IRBuilder::new("test");
+        let module = builder
+            .lower_program(&program)
+            .expect("lowering must succeed");
+
+        let entry = module
+            .function("__entry")
+            .expect("entry function must exist");
+        assert_eq!(entry.block_count(), 1);
+        assert!(entry.blocks[0].instruction_count() >= 5);
+
+        let rendered = module.fmt_display();
+        assert!(rendered.contains("__entry"));
+        assert!(rendered.contains("= 1"));
+        assert!(rendered.contains("+"));
+        assert!(rendered.contains("return"));
+    }
+
+    #[test]
+    fn lowers_if_and_loop_blocks_into_cfg_shape() {
+        let span = test_span();
+        let program = Program::new(
+            Vec::new(),
+            Some(Expr::block(
+                vec![
+                    Expr::if_expr(
+                        Expr::literal(Literal::Boolean(true), span.clone()),
+                        Expr::literal(Literal::Number(10.0), span.clone()),
+                        Vec::new(),
+                        Some(Expr::literal(Literal::Number(20.0), span.clone())),
+                        span.clone(),
+                    ),
+                    Expr::while_expr(
+                        Expr::literal(Literal::Boolean(true), span.clone()),
+                        Expr::literal(Literal::Number(1.0), span.clone()),
+                        span.clone(),
+                    ),
+                ],
+                span.clone(),
+            )),
+            span.clone(),
+        );
+
+        let mut builder = IRBuilder::new("test");
+        let module = builder
+            .lower_program(&program)
+            .expect("lowering must succeed");
+
+        let rendered = module.fmt_display();
+        assert!(rendered.contains("if_then"));
+        assert!(rendered.contains("if_else"));
+        assert!(rendered.contains("if_merge"));
+        assert!(rendered.contains("while_cond"));
+        assert!(rendered.contains("while_body"));
+        assert!(rendered.contains("while_exit"));
+        assert!(rendered.contains("phi"));
+        assert!(rendered.contains("br"));
+        assert!(rendered.contains("jump"));
+    }
+
+    #[test]
     fn cfg_basic_linking_and_validation() {
         use crate::ir::block::ControlFlowGraph;
         let mut cfg = ControlFlowGraph::new();
@@ -86,8 +225,8 @@ mod tests {
 
         assert!(cfg.validate().is_ok());
 
-        assert_eq!(cfg.successors(&b1).unwrap(), &[b2.clone()]);
-        assert_eq!(cfg.predecessors(&b2).unwrap(), &[b1.clone()]);
+        assert_eq!(cfg.successors(&b1).unwrap(), std::slice::from_ref(&b2));
+        assert_eq!(cfg.predecessors(&b2).unwrap(), std::slice::from_ref(&b1));
         assert_eq!(cfg.successors(&b2).unwrap(), &[b3.clone()]);
         assert_eq!(cfg.predecessors(&b3).unwrap(), &[b2.clone()]);
     }
@@ -124,7 +263,7 @@ mod tests {
         assert!(cfg.validate().is_ok());
 
         assert_eq!(cfg.successors(&head).unwrap(), &[cond.clone()]);
-        
+
         let cond_succs = cfg.successors(&cond).unwrap();
         assert!(cond_succs.contains(&body));
         assert!(cond_succs.contains(&exit));

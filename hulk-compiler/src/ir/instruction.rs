@@ -5,7 +5,6 @@
 
 use super::block::BasicBlockId;
 use super::value::IRValueId;
-use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IRBinaryOp {
@@ -124,9 +123,9 @@ impl IRInstruction {
             }
             IRInstructionKind::Branch { condition, .. } => operand_uses_value(condition, value_id),
             IRInstructionKind::Return(Some(operand)) => operand_uses_value(operand, value_id),
-            IRInstructionKind::Call { arguments, .. } => {
-                arguments.iter().any(|arg| operand_uses_value(arg, value_id))
-            }
+            IRInstructionKind::Call { arguments, .. } => arguments
+                .iter()
+                .any(|arg| operand_uses_value(arg, value_id)),
             _ => false,
         }
     }
@@ -173,10 +172,7 @@ impl IRInstruction {
     pub fn target_block(&self) -> Option<&BasicBlockId> {
         match &self.kind {
             IRInstructionKind::Jump { target } => Some(target),
-            IRInstructionKind::Branch {
-                then_block,
-                ..
-            } => Some(then_block),
+            IRInstructionKind::Branch { then_block, .. } => Some(then_block),
             _ => None,
         }
     }
@@ -200,17 +196,12 @@ impl IRInstruction {
         }
     }
 
-    pub fn phi_from_block(
-        &self,
-        block_id: &BasicBlockId,
-    ) -> Option<&IRValueId> {
+    pub fn phi_from_block(&self, block_id: &BasicBlockId) -> Option<&IRValueId> {
         match &self.kind {
-            IRInstructionKind::Phi { incoming, .. } => {
-                incoming
-                    .iter()
-                    .find(|(_, bid)| bid == block_id)
-                    .map(|(vid, _)| vid)
-            }
+            IRInstructionKind::Phi { incoming, .. } => incoming
+                .iter()
+                .find(|(_, bid)| bid == block_id)
+                .map(|(vid, _)| vid),
             _ => None,
         }
     }
@@ -326,12 +317,10 @@ impl IRInstruction {
                     else_block.0
                 )
             }
-            IRInstructionKind::Return(operand) => {
-                match operand {
-                    Some(op) => format!("return {}", op.fmt_display()),
-                    None => "return".to_string(),
-                }
-            }
+            IRInstructionKind::Return(operand) => match operand {
+                Some(op) => format!("return {}", op.fmt_display()),
+                None => "return".to_string(),
+            },
             IRInstructionKind::Call {
                 target,
                 callee,

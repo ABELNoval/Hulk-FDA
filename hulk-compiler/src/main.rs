@@ -25,7 +25,14 @@ fn run() -> hulk_compiler::utils::errors::CompileResult<()> {
             println!("tokens generados: {}", report.tokens.len());
 
             if let Some(program) = report.program {
-                println!("AST listo con {} declaración(es)", program.declarations.len());
+                println!(
+                    "AST listo con {} declaración(es)",
+                    program.declarations.len()
+                );
+            }
+
+            if let Some(ir) = report.ir {
+                println!("IR listo con {} función(es)", ir.functions.len());
             }
 
             Ok(())

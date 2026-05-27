@@ -50,4 +50,18 @@ mod tests_cli {
             CliCommand::Help => panic!("se esperaba una corrida, no ayuda"),
         }
     }
+
+    #[test]
+    fn parses_ir_mode() {
+        let command =
+            CliCommand::parse_args(vec!["--ir".to_string(), "programa.hulk".to_string()]).unwrap();
+
+        match command {
+            CliCommand::Run(config) => {
+                assert_eq!(config.mode, CompilationMode::Ir);
+                assert!(matches!(config.input, InputSource::File(_)));
+            }
+            CliCommand::Help => panic!("se esperaba una corrida, no ayuda"),
+        }
+    }
 }

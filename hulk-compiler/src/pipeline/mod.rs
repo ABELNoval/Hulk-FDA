@@ -22,6 +22,7 @@
 //
 // =============================================================================
 
+use crate::ir::{IRBuilder, IRModule, run_ssa_renaming};
 use crate::lexer::{Lexer, Token};
 use crate::parser::{Parser, Program};
 use crate::semantic::SemanticAnalyzer;
@@ -29,99 +30,124 @@ use crate::utils::errors::{CompilationError, CompileResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineStage {
-	Lex,
-	Parse,
-	Semantic,
+    Lex,
+    Parse,
+    Semantic,
+    Ir,
 }
 
 impl PipelineStage {
-	pub fn label(self) -> &'static str {
-		match self {
-			PipelineStage::Lex => "lex",
-			PipelineStage::Parse => "parse",
-			PipelineStage::Semantic => "semantic",
-		}
-	}
+    pub fn label(self) -> &'static str {
+        match self {
+            PipelineStage::Lex => "lex",
+            PipelineStage::Parse => "parse",
+            PipelineStage::Semantic => "semantic",
+            PipelineStage::Ir => "ir",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineReport {
-	pub stage: PipelineStage,
-	pub tokens: Vec<Token>,
-	pub program: Option<Program>,
+    pub stage: PipelineStage,
+    pub tokens: Vec<Token>,
+    pub program: Option<Program>,
+    pub ir: Option<IRModule>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CompilationPipeline {
-	source: String,
-	file_name: String,
+    source: String,
+    file_name: String,
 }
 
 impl CompilationPipeline {
-	pub fn new(source: impl Into<String>, file_name: impl Into<String>) -> Self {
-		Self {
-			source: source.into(),
-			file_name: file_name.into(),
-		}
-	}
+    pub fn new(source: impl Into<String>, file_name: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            file_name: file_name.into(),
+        }
+    }
 
-	pub fn run_to(&self, stage: PipelineStage) -> CompileResult<PipelineReport> {
-		let tokens = self.lex()?;
+    pub fn run_to(&self, stage: PipelineStage) -> CompileResult<PipelineReport> {
+        let tokens = self.lex()?;
 
-		if stage == PipelineStage::Lex {
-			return Ok(PipelineReport {
-				stage,
-				tokens,
-				program: None,
-			});
-		}
+        if stage == PipelineStage::Lex {
+            return Ok(PipelineReport {
+                stage,
+                tokens,
+                program: None,
+                ir: None,
+            });
+        }
 
-		let program = self.parse(tokens.clone())?;
+        let program = self.parse(tokens.clone())?;
 
-		if stage == PipelineStage::Parse {
-			return Ok(PipelineReport {
-				stage,
-				tokens,
-				program: Some(program),
-			});
-		}
+        if stage == PipelineStage::Parse {
+            return Ok(PipelineReport {
+                stage,
+                tokens,
+                program: Some(program),
+                ir: None,
+            });
+        }
 
-		self.semantic(&program)?;
+        self.semantic(&program)?;
 
-		Ok(PipelineReport {
-			stage,
-			tokens,
-			program: Some(program),
-		})
-	}
+        if stage == PipelineStage::Semantic {
+            return Ok(PipelineReport {
+                stage,
+                tokens,
+                program: Some(program),
+                ir: None,
+            });
+        }
 
-	pub fn lex(&self) -> CompileResult<Vec<Token>> {
-		let mut lexer = Lexer::new(self.source.clone(), self.file_name.clone());
-		let (tokens, errors) = lexer.tokenize_with_errors();
+        let mut ir = self.ir(&program)?;
+        run_ssa_renaming(&mut ir);
 
-		if let Some(diagnostic) = errors.into_iter().next() {
-			return Err(CompilationError::from(diagnostic.error));
-		}
+        Ok(PipelineReport {
+            stage,
+            tokens,
+            program: Some(program),
+            ir: Some(ir),
+        })
+    }
 
-		Ok(tokens)
-	}
+    pub fn lex(&self) -> CompileResult<Vec<Token>> {
+        let mut lexer = Lexer::new(self.source.clone(), self.file_name.clone());
+        let (tokens, errors) = lexer.tokenize_with_errors();
 
-	pub fn parse(&self, tokens: Vec<Token>) -> CompileResult<Program> {
-		let mut parser = Parser::new(tokens);
-		let (program, errors) = parser.parse_program_with_errors();
+        if let Some(diagnostic) = errors.into_iter().next() {
+            return Err(CompilationError::from(diagnostic.error));
+        }
 
-		if let Some(diagnostic) = errors.into_iter().next() {
-			return Err(CompilationError::from(diagnostic.error));
-		}
+        Ok(tokens)
+    }
 
-		Ok(program)
-	}
+    pub fn parse(&self, tokens: Vec<Token>) -> CompileResult<Program> {
+        let mut parser = Parser::new(tokens);
+        let (program, errors) = parser.parse_program_with_errors();
 
-	pub fn semantic(&self, program: &Program) -> CompileResult<()> {
-		let mut analyzer = SemanticAnalyzer::new();
-		analyzer.analyze(program).map_err(CompilationError::from)?;
-		Ok(())
-	}
+        if let Some(diagnostic) = errors.into_iter().next() {
+            return Err(CompilationError::from(diagnostic.error));
+        }
+
+        Ok(program)
+    }
+
+    pub fn semantic(&self, program: &Program) -> CompileResult<()> {
+        let mut analyzer = SemanticAnalyzer::new();
+        analyzer.analyze(program).map_err(CompilationError::from)?;
+        Ok(())
+    }
+
+    pub fn ir(&self, program: &Program) -> CompileResult<IRModule> {
+        let mut builder = IRBuilder::new("lowered");
+        builder
+            .lower_program(program)
+            .map_err(|error| CompilationError::internal(error.to_string()))
+    }
 }
 
 #[cfg(test)]

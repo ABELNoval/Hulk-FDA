@@ -41,5 +41,18 @@ mod tests_pipeline {
 
         assert_eq!(report.stage, PipelineStage::Semantic);
         assert!(report.program.is_some());
+        assert!(report.ir.is_none());
+    }
+
+    #[test]
+    fn runs_ir_stage() {
+        let pipeline = CompilationPipeline::new("1 + 2", "<test>");
+        let report = pipeline.run_to(PipelineStage::Ir).unwrap();
+
+        assert_eq!(report.stage, PipelineStage::Ir);
+        assert!(report.program.is_some());
+        assert!(report.ir.is_some());
+        let ir = report.ir.expect("IR must be available at IR stage");
+        assert!(!ir.functions.is_empty());
     }
 }

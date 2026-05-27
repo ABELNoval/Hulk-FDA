@@ -25,114 +25,117 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::pipeline::PipelineStage;
-use crate::utils::errors::{CompileResult, CompilationError};
+use crate::utils::errors::{CompilationError, CompileResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompilationMode {
-	Lex,
-	Parse,
-	Semantic,
+    Lex,
+    Parse,
+    Semantic,
+    Ir,
 }
 
 impl CompilationMode {
-	pub fn as_stage(self) -> PipelineStage {
-		match self {
-			CompilationMode::Lex => PipelineStage::Lex,
-			CompilationMode::Parse => PipelineStage::Parse,
-			CompilationMode::Semantic => PipelineStage::Semantic,
-		}
-	}
+    pub fn as_stage(self) -> PipelineStage {
+        match self {
+            CompilationMode::Lex => PipelineStage::Lex,
+            CompilationMode::Parse => PipelineStage::Parse,
+            CompilationMode::Semantic => PipelineStage::Semantic,
+            CompilationMode::Ir => PipelineStage::Ir,
+        }
+    }
 
-	pub fn label(self) -> &'static str {
-		match self {
-			CompilationMode::Lex => "lex",
-			CompilationMode::Parse => "parse",
-			CompilationMode::Semantic => "semantic",
-		}
-	}
+    pub fn label(self) -> &'static str {
+        match self {
+            CompilationMode::Lex => "lex",
+            CompilationMode::Parse => "parse",
+            CompilationMode::Semantic => "semantic",
+            CompilationMode::Ir => "ir",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputSource {
-	File(PathBuf),
-	Inline(String),
+    File(PathBuf),
+    Inline(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliConfig {
-	pub input: InputSource,
-	pub mode: CompilationMode,
+    pub input: InputSource,
+    pub mode: CompilationMode,
 }
 
 impl CliConfig {
-	pub fn load_source(&self) -> CompileResult<(String, String)> {
-		match &self.input {
-			InputSource::File(path) => {
-				let source = fs::read_to_string(path).map_err(|error| {
-					CompilationError::io("leer", path.display().to_string(), error.to_string())
-				})?;
+    pub fn load_source(&self) -> CompileResult<(String, String)> {
+        match &self.input {
+            InputSource::File(path) => {
+                let source = fs::read_to_string(path).map_err(|error| {
+                    CompilationError::io("leer", path.display().to_string(), error.to_string())
+                })?;
 
-				Ok((source, path.display().to_string()))
-			}
-			InputSource::Inline(source) => Ok((source.clone(), "<inline>".to_string())),
-		}
-	}
+                Ok((source, path.display().to_string()))
+            }
+            InputSource::Inline(source) => Ok((source.clone(), "<inline>".to_string())),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
-	Help,
-	Run(CliConfig),
+    Help,
+    Run(CliConfig),
 }
 
 pub fn usage() -> &'static str {
-	"Hulk Compiler\n\nUso:\n  hulk-compiler [--lex|--parse|--semantic] <archivo>\n  hulk-compiler --source \"codigo fuente\" [--lex|--parse|--semantic]\n\nOpciones:\n  --lex         Ejecuta solo lexer\n  --parse       Ejecuta lexer + parser\n  --semantic    Ejecuta lexer + parser + semantica\n  --source      Usa codigo inline en lugar de archivo\n  -h, --help    Muestra esta ayuda"
+    "Hulk Compiler\n\nUso:\n  hulk-compiler [--lex|--parse|--semantic|--ir] <archivo>\n  hulk-compiler --source \"codigo fuente\" [--lex|--parse|--semantic|--ir]\n\nOpciones:\n  --lex         Ejecuta solo lexer\n  --parse       Ejecuta lexer + parser\n  --semantic    Ejecuta lexer + parser + semantica\n  --ir          Ejecuta lexer + parser + semantica + IR\n  --source      Usa codigo inline en lugar de archivo\n  -h, --help    Muestra esta ayuda"
 }
 
 impl CliCommand {
-	pub fn from_env() -> CompileResult<Self> {
-		Self::parse_args(env::args().skip(1))
-	}
+    pub fn from_env() -> CompileResult<Self> {
+        Self::parse_args(env::args().skip(1))
+    }
 
-	pub fn parse_args<I>(args: I) -> CompileResult<Self>
-	where
-		I: IntoIterator<Item = String>,
-	{
-		let mut mode = CompilationMode::Semantic;
-		let mut input: Option<InputSource> = None;
+    pub fn parse_args<I>(args: I) -> CompileResult<Self>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let mut mode = CompilationMode::Semantic;
+        let mut input: Option<InputSource> = None;
 
-		let mut iterator = args.into_iter();
+        let mut iterator = args.into_iter();
 
-		while let Some(arg) = iterator.next() {
-			match arg.as_str() {
-				"-h" | "--help" => return Ok(CliCommand::Help),
-				"--lex" => mode = CompilationMode::Lex,
-				"--parse" => mode = CompilationMode::Parse,
-				"--semantic" => mode = CompilationMode::Semantic,
-				"--source" => {
-					let source = iterator.next().ok_or_else(|| {
-						CompilationError::internal("falta el texto después de --source")
-					})?;
-					input = Some(InputSource::Inline(source));
-				}
-				_ if arg.starts_with('-') => {
-					return Err(CompilationError::internal(format!(
-						"opción desconocida: {}",
-						arg
-					)));
-				}
-				_ => {
-					input = Some(InputSource::File(PathBuf::from(arg)));
-				}
-			}
-		}
+        while let Some(arg) = iterator.next() {
+            match arg.as_str() {
+                "-h" | "--help" => return Ok(CliCommand::Help),
+                "--lex" => mode = CompilationMode::Lex,
+                "--parse" => mode = CompilationMode::Parse,
+                "--semantic" => mode = CompilationMode::Semantic,
+                "--ir" => mode = CompilationMode::Ir,
+                "--source" => {
+                    let source = iterator.next().ok_or_else(|| {
+                        CompilationError::internal("falta el texto después de --source")
+                    })?;
+                    input = Some(InputSource::Inline(source));
+                }
+                _ if arg.starts_with('-') => {
+                    return Err(CompilationError::internal(format!(
+                        "opción desconocida: {}",
+                        arg
+                    )));
+                }
+                _ => {
+                    input = Some(InputSource::File(PathBuf::from(arg)));
+                }
+            }
+        }
 
-		let input = input.ok_or_else(|| {
-			CompilationError::internal("debes pasar un archivo o usar --source")
-		})?;
+        let input = input
+            .ok_or_else(|| CompilationError::internal("debes pasar un archivo o usar --source"))?;
 
-		Ok(CliCommand::Run(CliConfig { input, mode }))
-	}
+        Ok(CliCommand::Run(CliConfig { input, mode }))
+    }
 }
 
 #[cfg(test)]

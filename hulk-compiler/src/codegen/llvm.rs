@@ -75,7 +75,19 @@ impl LlvmTextBackend {
                             IROperand::Text(_) => "ptr",
                             _ => "i64",
                         };
-                        format!("  ; {} = {}", target.0, self.render_operand(value))
+                        let base_name = target.0.trim_start_matches('%');
+                        let addr = format!("%{}.addr", base_name);
+                        format!(
+                            "  {} = alloca {}\n  store {} {}, ptr {}\n  {} = load {}, ptr {}",
+                            addr,
+                            ty,
+                            ty,
+                            self.render_operand(value),
+                            addr,
+                            target.0,
+                            ty,
+                            addr
+                        )
                     }
                     IRInstructionKind::Binary {
                         target,

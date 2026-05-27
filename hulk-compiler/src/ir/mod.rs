@@ -2,25 +2,37 @@
 // IR (Intermediate Representation - Representación Intermedia)
 // =============================================================================
 //
-// La IR es una representación del programa que está entre el código fuente
-// de alto nivel y el código máquina de bajo nivel.
-//
-// Propósitos de la IR:
-// - Independencia de la arquitectura objetivo
-// - Facilitar optimizaciones
-// - Simplificar la generación de código
-// - Permitir múltiples backends (x86, ARM, LLVM, etc.)
-//
-// Formas comunes de IR:
-// - Three-Address Code (TAC): instrucciones de máximo 3 operandos
-// - SSA (Static Single Assignment): cada variable se asigna una sola vez
-// - Stack-based: operaciones sobre una pila virtual
-// - Graph-based: CFG (Control Flow Graph), DFG (Data Flow Graph)
-//
-// Componentes típicos:
-// - Definición de la estructura de la IR
-// - Conversión de AST a IR (lowering)
-// - Pretty printing de la IR para debugging
-// - Passes de optimización sobre la IR
+// Este módulo expone la API compartida de la IR para SSA, CFG y lowering.
+// La idea es separar responsabilidades para que cada frente tenga un punto
+// claro de extensión sin concentrar todo en un único archivo.
 //
 // =============================================================================
+
+pub mod block;
+pub mod instruction;
+pub mod lowering;
+pub mod module;
+pub mod naming;
+pub mod ssa;
+pub mod value;
+
+#[cfg(test)]
+pub mod test_support;
+
+#[cfg(test)]
+mod tests;
+
+#[allow(unused_imports)]
+pub use block::{BasicBlock, BasicBlockId, ControlFlowGraph};
+#[allow(unused_imports)]
+pub use instruction::{IRBinaryOp, IRInstruction, IRInstructionKind, IROperand, IRUnaryOp};
+#[allow(unused_imports)]
+pub use lowering::{IRBuilder, IRLoweringContext, IRLoweringError, IRLoweringResult};
+#[allow(unused_imports)]
+pub use module::{IRFunction, IRModule};
+#[allow(unused_imports)]
+pub use naming::{IRNaming, SSAValueGenerator};
+#[allow(unused_imports)]
+pub use ssa::run_ssa_renaming;
+#[allow(unused_imports)]
+pub use value::{IRValue, IRValueId, IRValueKind};

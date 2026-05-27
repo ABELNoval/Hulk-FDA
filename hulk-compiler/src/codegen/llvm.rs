@@ -164,12 +164,7 @@ impl LlvmTextBackend {
                         else_block.0
                     ),
                     IRInstructionKind::Return(Some(operand)) => {
-                        let ty = match operand {
-                            IROperand::Boolean(_) => "i1",
-                            IROperand::Float(_) => "double",
-                            IROperand::Text(_) => "ptr",
-                            _ => "i64",
-                        };
+                        let ty = self.render_type(function.return_type.as_deref());
                         format!("  ret {} {}", ty, self.render_operand(operand))
                     }
                     IRInstructionKind::Return(None) => "  ret void".to_string(),
@@ -179,14 +174,28 @@ impl LlvmTextBackend {
                         arguments,
                         ..
                     } => {
+                        let ret_ty = module
+                            .function(callee)
+                            .map(|f| self.render_type(f.return_type.as_deref()))
+                            .unwrap_or("i64");
+
                         let args = arguments
                             .iter()
-                            .map(|arg| self.render_operand(arg))
+                            .map(|arg| {
+                                let arg_ty = match arg {
+                                    IROperand::Boolean(_) => "i1",
+                                    IROperand::Float(_) => "double",
+                                    IROperand::Text(_) => "ptr",
+                                    _ => "i64",
+                                };
+                                format!("{} {}", arg_ty, self.render_operand(arg))
+                            })
                             .collect::<Vec<_>>()
                             .join(", ");
+
                         match target {
-                            Some(value) => format!("  ; {} = call @{}({})", value.0, callee, args),
-                            None => format!("  ; call @{}({})", callee, args),
+                            Some(value) => format!("  {} = call {} @{}({})", value.0, ret_ty, callee, args),
+                            None => format!("  call {} @{}({})", ret_ty, callee, args),
                         }
                     }
                     IRInstructionKind::Nop => "  ; nop".to_string(),

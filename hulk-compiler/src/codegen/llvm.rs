@@ -2,17 +2,129 @@ use crate::ir::{IRInstructionKind, IRModule, IROperand};
 
 use super::artifact::CodegenArtifact;
 use super::backend::CodegenBackend;
-use super::context::{CodegenContext, CodegenTarget};
+use super::context::{CodegenContext, CodegenTarget, LlvmContext, LlvmModule, LlvmBuilder};
 use super::error::{CodegenError, CodegenResult};
+
+// =============================================================================
+// LLVM Lifecycle Management Module
+// =============================================================================
+//
+// This module provides safe lifecycle management for LLVM compilation.
+// It ensures proper initialization, configuration, and cleanup of contexts,
+// modules, and builders.
+//
+
+/// Manages the lifecycle of LLVM compilation components.
+/// Provides high-level operations for context creation, module setup, and cleanup.
+#[derive(Debug)]
+pub struct LlvmLifecycle {
+    context: LlvmContext,
+}
+
+impl LlvmLifecycle {
+    /// Create a new LLVM lifecycle manager.
+    pub fn new() -> Self {
+        Self {
+            context: LlvmContext::new(),
+        }
+    }
+
+    /// Get the LLVM context.
+    pub fn context(&self) -> &LlvmContext {
+        &self.context
+    }
+
+    /// Create a new module within this context.
+    pub fn create_module(&self, name: impl Into<String>) -> CodegenResult<LlvmModule> {
+        let mut m = LlvmModule::new(&self.context, name);
+        // populate default runtime declarations so lowering can rely on them
+        m.add_default_runtime_decls();
+        Ok(m)
+    }
+
+    /// Create a builder for module construction.
+    pub fn create_builder(&self, module: LlvmModule) -> CodegenResult<LlvmBuilder> {
+        module.verify_context(&self.context)
+            .map_err(|e| CodegenError::BackendFailure { message: e })?;
+
+        Ok(LlvmBuilder::new(module))
+    }
+
+    /// Validate that a module is properly constructed before emission.
+    pub fn validate_module(&self, module: &LlvmModule) -> CodegenResult<()> {
+        module.verify_context(&self.context)
+            .map_err(|e| CodegenError::BackendFailure { message: e })?;
+
+        if module.symbols().is_empty() {
+            return Err(CodegenError::InvalidModule {
+                module: module.name().to_string(),
+                message: "module has no symbols; at least one function expected".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+}
+
+impl Default for LlvmLifecycle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
+// LLVM Text Backend
+// =============================================================================
+//
+// The text backend emits LLVM IR as human-readable text.
+// It uses the LlvmLifecycle manager to ensure proper setup.
+//
 
 // Person B owns this file: it contains the LLVM IR lowering and emission
 // logic that maps project IR into the LLVM text backend.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct LlvmTextBackend;
+#[derive(Debug)]
+pub struct LlvmTextBackend {
+    lifecycle: LlvmLifecycle,
+}
 
 impl LlvmTextBackend {
     pub fn new() -> Self {
-        Self
+        Self {
+            lifecycle: LlvmLifecycle::new(),
+        }
+    }
+
+    pub fn lifecycle(&self) -> &LlvmLifecycle {
+        &self.lifecycle
+    }
+
+    /// Convert a compiler type name into the LLVM spelling used in function
+    /// signatures and runtime declarations.
+    pub(crate) fn llvm_type_for(language_type: Option<&str>) -> String {
+        let Some(raw_type) = language_type.map(str::trim).filter(|ty| !ty.is_empty()) else {
+            return "i64".to_string();
+        };
+
+        let lowered = raw_type.to_ascii_lowercase();
+
+        match lowered.as_str() {
+            "number" | "float" | "f64" | "double" => "double".to_string(),
+            "boolean" | "bool" => "i1".to_string(),
+            "string" | "str" | "text" => "ptr".to_string(),
+            "void" => "void".to_string(),
+            "i8" | "i16" | "i32" | "i64" => lowered,
+            "u8" | "u16" | "u32" | "u64" | "int" | "integer" | "isize" | "usize" => {
+                "i64".to_string()
+            }
+            "ptr" | "pointer" => "ptr".to_string(),
+            _ if lowered.starts_with('i')
+                && lowered.len() > 1
+                && lowered[1..].chars().all(|ch| ch.is_ascii_digit()) =>
+            {
+                lowered
+            }
+            _ => "ptr".to_string(),
+        }
     }
 
     fn render_operand(&self, operand: &IROperand) -> String {
@@ -31,16 +143,6 @@ impl LlvmTextBackend {
         }
     }
 
-    fn render_type(&self, ty: Option<&str>) -> &'static str {
-        match ty {
-            Some("bool") => "i1",
-            Some("f64") | Some("float") => "double",
-            Some("string") | Some("str") => "ptr",
-            Some("void") => "void",
-            Some(_) | None => "i64",
-        }
-    }
-
     fn render_function(&self, module: &IRModule, function_name: &str) -> CodegenResult<String> {
         let function =
             module
@@ -49,11 +151,11 @@ impl LlvmTextBackend {
                     message: format!("function '{}' disappeared while rendering", function_name),
                 })?;
 
-        let return_type = self.render_type(function.return_type.as_deref());
+        let return_type = Self::llvm_type_for(function.return_type.as_deref());
         let params = function
             .parameters
             .iter()
-            .map(|param| format!("{} %{}", self.render_type(param.ty.as_deref()), param.id.0))
+            .map(|param| format!("{} %{}", Self::llvm_type_for(param.ty.as_deref()), param.id.0))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -178,6 +280,12 @@ impl LlvmTextBackend {
     }
 }
 
+impl Default for LlvmTextBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CodegenBackend for LlvmTextBackend {
     fn backend_name(&self) -> &'static str {
         "llvm-text"
@@ -204,15 +312,24 @@ impl CodegenBackend for LlvmTextBackend {
                 message: errors.join("; "),
             })?;
 
+        // create an LLVM module abstraction for declarations and lifecycle
+        let llvm_module = self.lifecycle.create_module(&context.module_name)?;
+
         let mut output = String::new();
         output.push_str(&format!("; ModuleID = '{}'\n", context.module_name));
+        output.push_str(&format!("target triple = \"{}\"\n", context.resolved_target_triple()));
+        output.push_str(&format!("target datalayout = \"{}\"\n", context.resolved_data_layout()));
+        output.push('\n');
 
-        if let Some(triple) = &context.target_triple {
-            output.push_str(&format!("target triple = \"{}\"\n", triple));
+        // Emit runtime declarations first (declare ...)
+        for (name, (ret_ty, params)) in llvm_module.runtime_decls() {
+            let params_joined = params.join(", ");
+            output.push_str(&format!("declare {} @{}({})\n", ret_ty, name, params_joined));
         }
 
         output.push('\n');
 
+        // Then emit function definitions from the IR
         for function in &module.functions {
             output.push_str(&self.render_function(module, &function.name)?);
         }

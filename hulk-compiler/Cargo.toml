@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+[dependencies.inkwell]
+version = "0.1"
+optional = true
+
+[features]
+# Enable LLVM-based verification (requires system LLVM and the `inkwell` crate)
+llvm-verify = ["inkwell"]

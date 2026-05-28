@@ -35,4 +35,27 @@ impl CodegenArtifact {
             CodegenOutput::Binary(_) => None,
         }
     }
+
+    /// Write the artifact to the given path. Returns io::Error on failure.
+    pub fn write_to_file(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        use std::fs;
+        use std::io::Write;
+
+        match &self.output {
+            CodegenOutput::Text(text) => {
+                if let Some(parent) = path.as_ref().parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let mut file = fs::File::create(path)?;
+                file.write_all(text.as_bytes())?;
+                Ok(())
+            }
+            CodegenOutput::Binary(bytes) => {
+                if let Some(parent) = path.as_ref().parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, bytes)
+            }
+        }
+    }
 }

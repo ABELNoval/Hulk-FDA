@@ -41,6 +41,6 @@ mod tests;
 
 pub use artifact::{CodegenArtifact, CodegenOutput};
 pub use backend::CodegenBackend;
-pub use context::{CodegenContext, CodegenTarget};
+pub use context::{CodegenContext, CodegenTarget, LlvmContext, LlvmModule, LlvmBuilder};
 pub use error::{CodegenError, CodegenResult};
-pub use llvm::LlvmTextBackend;
+pub use llvm::{LlvmTextBackend, LlvmLifecycle};

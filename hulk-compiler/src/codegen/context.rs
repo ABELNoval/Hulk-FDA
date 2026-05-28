@@ -128,6 +128,9 @@ pub struct LlvmModule {
     /// Symbol table: function names -> (return type, param types)
     /// Used to detect symbol conflicts and validate call sites.
     symbols: std::collections::HashMap<String, (String, Vec<String>)>,
+    /// Declared prototypes for external or forward-declared symbols.
+    /// Map: name -> (return_type, param_types, is_defined)
+    prototypes: std::collections::HashMap<String, (String, Vec<String>, bool)>,
     /// Runtime declarations (external functions provided by the runtime)
     runtime_decls: std::collections::HashMap<String, (String, Vec<String>)>,
     
@@ -145,6 +148,7 @@ impl LlvmModule {
             data_layout: CodegenContext::DEFAULT_DATA_LAYOUT.to_string(),
             symbols: std::collections::HashMap::new(),
             runtime_decls: std::collections::HashMap::new(),
+            prototypes: std::collections::HashMap::new(),
             finalized: false,
         }
     }
@@ -192,12 +196,75 @@ impl LlvmModule {
             return Err("Module is finalized; cannot register new symbols".to_string());
         }
 
-        if self.symbols.contains_key(&name_str) {
+        // For backwards compatibility treat this as defining the symbol
+        self.define_symbol(name_str, return_type.into(), param_types)
+    }
+
+    /// Declare a prototype for an external function (no body).
+    pub fn declare_symbol(
+        &mut self,
+        name: impl Into<String>,
+        return_type: impl Into<String>,
+        param_types: Vec<String>,
+    ) -> Result<(), String> {
+        let name_str = name.into();
+
+        if self.finalized {
+            return Err("Module is finalized; cannot register new symbols".to_string());
+        }
+
+        if self.runtime_decls.contains_key(&name_str) || self.symbols.contains_key(&name_str) {
             return Err(format!("Symbol '{}' already exists in module", name_str));
         }
 
+        if let Some((ret, params, _)) = self.prototypes.get(&name_str) {
+            if ret != &return_type.into() || params != &param_types {
+                return Err(format!("Conflicting prototype for symbol '{}'", name_str));
+            }
+            // already declared; no-op
+            return Ok(());
+        }
+
+        self.prototypes
+            .insert(name_str, (return_type.into(), param_types, false));
+        Ok(())
+    }
+
+    /// Define a symbol (provide its implementation). If a prototype exists, mark as defined.
+    pub fn define_symbol(
+        &mut self,
+        name: impl Into<String>,
+        return_type: impl Into<String>,
+        param_types: Vec<String>,
+    ) -> Result<(), String> {
+        let name_str = name.into();
+
+        if self.finalized {
+            return Err("Module is finalized; cannot register new symbols".to_string());
+        }
+
+        if self.runtime_decls.contains_key(&name_str) {
+            return Err(format!("Symbol '{}' conflicts with runtime declaration", name_str));
+        }
+
+        if self.symbols.contains_key(&name_str) {
+            return Err(format!("Symbol '{}' already defined in module", name_str));
+        }
+
+        // Normalize inputs to avoid moving `return_type` multiple times
+        let return_type_str = return_type.into();
+
+        // If a prototype exists, verify signature matches
+        if let Some((ret, params, _defined)) = self.prototypes.get(&name_str) {
+            if ret != &return_type_str || params != &param_types {
+                return Err(format!("Conflicting definition for symbol '{}'", name_str));
+            }
+            // mark prototype as defined and mirror into symbols
+            self.prototypes.insert(name_str.clone(), (ret.clone(), params.clone(), true));
+        }
+
         self.symbols
-            .insert(name_str, (return_type.into(), param_types));
+            .insert(name_str, (return_type_str, param_types));
         Ok(())
     }
 
@@ -226,6 +293,11 @@ impl LlvmModule {
     /// Get runtime declarations
     pub fn runtime_decls(&self) -> &std::collections::HashMap<String, (String, Vec<String>)> {
         &self.runtime_decls
+    }
+
+    /// Get declared prototypes (including whether they are defined).
+    pub fn prototypes(&self) -> &std::collections::HashMap<String, (String, Vec<String>, bool)> {
+        &self.prototypes
     }
 
     /// Add a set of default runtime declarations used by lowering.

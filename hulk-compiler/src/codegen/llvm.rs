@@ -64,6 +64,67 @@ impl LlvmLifecycle {
 
         Ok(())
     }
+
+    /// Validate module consistency against the IRModule and (optionally) an external verifier.
+    /// This performs cross-checks between prototypes, runtime declarations and IR call sites.
+    pub fn validate_full_module(&self, llvm_module: &LlvmModule, ir_module: &crate::ir::IRModule) -> CodegenResult<()> {
+        // Basic context check
+        llvm_module.verify_context(&self.context)
+            .map_err(|e| CodegenError::BackendFailure { message: e })?;
+
+        // Ensure there is at least one symbol defined (same as before)
+        if llvm_module.symbols().is_empty() {
+            return Err(CodegenError::InvalidModule {
+                module: llvm_module.name().to_string(),
+                message: "module has no symbols; at least one function expected".to_string(),
+            });
+        }
+
+        // Cross-check call sites: parameter counts
+        for func in &ir_module.functions {
+            for block in &func.blocks {
+                for instr in &block.instructions {
+                    if let crate::ir::IRInstructionKind::Call { callee, arguments, .. } = &instr.kind {
+                        // prefer symbols -> prototypes -> runtime_decls
+                        if let Some((_, params)) = llvm_module.symbols().get(callee) {
+                            if params.len() != arguments.len() {
+                                return Err(CodegenError::InvalidModule {
+                                    module: llvm_module.name().to_string(),
+                                    message: format!("Call to '{}' has {} args but definition has {} parameters", callee, arguments.len(), params.len()),
+                                });
+                            }
+                        } else if let Some((_, params, _)) = llvm_module.prototypes().get(callee) {
+                            if params.len() != arguments.len() {
+                                return Err(CodegenError::InvalidModule {
+                                    module: llvm_module.name().to_string(),
+                                    message: format!("Call to '{}' has {} args but prototype has {} parameters", callee, arguments.len(), params.len()),
+                                });
+                            }
+                        } else if llvm_module.runtime_decls().contains_key(callee) {
+                            // runtime decl exists; assume correct
+                        } else {
+                            return Err(CodegenError::InvalidModule {
+                                module: llvm_module.name().to_string(),
+                                message: format!("Call to unknown symbol '{}'", callee),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Placeholder for hooking LLVM verifier via feature flag
+        #[cfg(feature = "llvm-verify")]
+        {
+            // If the project enables `llvm-verify`, the actual verification using
+            // LLVM's verifier can be performed here by parsing the emitted LLVM IR
+            // and calling `module.verify()` through a binding like `inkwell`.
+            // Implementing that requires enabling the feature and ensuring LLVM is
+            // present on the system. See README or follow-up task to enable.
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for LlvmLifecycle {
@@ -313,8 +374,69 @@ impl CodegenBackend for LlvmTextBackend {
             })?;
 
         // create an LLVM module abstraction for declarations and lifecycle
-        let llvm_module = self.lifecycle.create_module(&context.module_name)?;
+        let mut llvm_module = self.lifecycle.create_module(&context.module_name)?;
 
+        // First, scan the IR for external call sites and infer prototypes.
+        use crate::ir::IRInstructionKind;
+        let infer_operand_ty = |op: &IROperand| -> String {
+            match op {
+                IROperand::Integer(_) => "i64".to_string(),
+                IROperand::Float(_) => "double".to_string(),
+                IROperand::Boolean(_) => "i1".to_string(),
+                IROperand::Text(_) => "ptr".to_string(),
+                IROperand::Value(_) => "i64".to_string(),
+            }
+        };
+
+        let mut extern_prototypes: std::collections::HashMap<String, (String, Vec<String>)> =
+            std::collections::HashMap::new();
+
+        for func in &module.functions {
+            for block in &func.blocks {
+                for instr in &block.instructions {
+                    if let IRInstructionKind::Call { callee, arguments, .. } = &instr.kind {
+                        if module.function(&callee).is_some() {
+                            continue;
+                        }
+                        if llvm_module.runtime_decls().contains_key(callee) {
+                            continue;
+                        }
+
+                        let params = arguments.iter().map(|arg| infer_operand_ty(arg)).collect::<Vec<_>>();
+                        let ret = if params.iter().any(|p| p == "double") {
+                            "double".to_string()
+                        } else {
+                            "i64".to_string()
+                        };
+
+                        extern_prototypes.entry(callee.clone()).or_insert((ret, params));
+                    }
+                }
+            }
+        }
+
+        // Register extern prototypes into the LlvmModule first.
+        for (name, (ret, params)) in &extern_prototypes {
+            let _ = llvm_module.declare_symbol(name, ret.clone(), params.clone());
+        }
+
+        // Now mark defined functions in the LlvmModule (so prototypes become 'defined')
+        for function in &module.functions {
+            // construct signature
+            let return_type = Self::llvm_type_for(function.return_type.as_deref());
+            let param_types = function
+                .parameters
+                .iter()
+                .map(|p| Self::llvm_type_for(p.ty.as_deref()))
+                .collect::<Vec<_>>();
+
+            // define symbol in module; propagate errors upward
+            llvm_module
+                .define_symbol(&function.name, return_type, param_types)
+                .map_err(|e| CodegenError::BackendFailure { message: e })?;
+        }
+
+        // Begin emitting output header and declarations
         let mut output = String::new();
         output.push_str(&format!("; ModuleID = '{}'\n", context.module_name));
         output.push_str(&format!("target triple = \"{}\"\n", context.resolved_target_triple()));
@@ -329,10 +451,26 @@ impl CodegenBackend for LlvmTextBackend {
 
         output.push('\n');
 
-        // Then emit function definitions from the IR
+        // Emit declared external prototypes that remain undefined
+        for (name, (ret_ty, params, defined)) in llvm_module.prototypes() {
+            if *defined {
+                continue;
+            }
+            let params_joined = params.join(", ");
+            output.push_str(&format!("declare {} @{}({})\n", ret_ty, name, params_joined));
+        }
+
+        output.push('\n');
+
+        // Finally emit function definitions from the IR
         for function in &module.functions {
             output.push_str(&self.render_function(module, &function.name)?);
         }
+
+        // Validate module consistency against the IR
+        self.lifecycle
+            .validate_full_module(&llvm_module, module)
+            .map_err(|e| CodegenError::InvalidModule { module: module.name.clone(), message: format!("validation failed: {}", e) })?;
 
         Ok(CodegenArtifact::text(CodegenTarget::LlvmIr, output))
     }

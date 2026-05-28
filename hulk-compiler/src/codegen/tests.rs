@@ -15,7 +15,8 @@
 // between the backend scaffold and the LLVM lowering implementation.
 
 use crate::codegen::{CodegenBackend, CodegenContext, CodegenTarget, LlvmTextBackend};
-use crate::ir::{BasicBlock, IRFunction, IRInstruction, IRInstructionKind, IRModule};
+use crate::codegen::LlvmLifecycle;
+use crate::ir::{BasicBlock, IRFunction, IRInstruction, IRInstructionKind, IRModule, IRValueId, IROperand};
 
 fn sample_module() -> IRModule {
     let mut module = IRModule::new("sample");
@@ -67,6 +68,93 @@ fn backend_uses_custom_target_configuration() {
 
     assert!(text.contains("target triple = \"aarch64-unknown-linux-gnu\""));
     assert!(text.contains("target datalayout = \"e-m:e-p:64:64-i64:64-v128:128-a:0:64-n32:64-S128\""));
+}
+
+#[test]
+fn backend_writes_llvm_text_to_file() {
+    let backend = LlvmTextBackend::new();
+    let context = CodegenContext::new("sample", CodegenTarget::LlvmIr);
+    let module = sample_module();
+
+    let mut path = std::env::temp_dir();
+    path.push(format!("hulk_llvm_{}.ll", std::process::id()));
+
+    let _ = backend
+        .emit_module_to_path(&module, &context, &path)
+        .expect("should write artifact");
+
+    let contents = std::fs::read_to_string(&path).expect("read written file");
+    assert!(contents.contains("ModuleID = 'sample'"));
+    assert!(contents.contains("declare void @print(ptr)"));
+
+    // cleanup
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn backend_detects_signature_conflict() {
+    // Build IR: main calls `foo` with one argument; `foo` is defined with zero params.
+    let mut module = IRModule::new("conflict");
+
+    // main function
+    let mut main = IRFunction::new("main");
+    main.return_type = Some("i64".to_string());
+    let mut entry = BasicBlock::new("entry");
+    entry.push_instruction(IRInstruction::new(IRInstructionKind::Call {
+        target: Some(IRValueId::new("t0".to_string())),
+        callee: "foo".to_string(),
+        arguments: vec![IROperand::Integer(42)],
+        original: None,
+    }));
+    entry.push_instruction(IRInstruction::new(IRInstructionKind::Return(Some(
+        IROperand::Integer(0),
+    ))));
+    main.add_block(entry);
+    module.add_function(main);
+
+    // foo function with zero parameters (conflict)
+    let mut foo = IRFunction::new("foo");
+    foo.return_type = Some("i64".to_string());
+    let mut fentry = BasicBlock::new("entry");
+    fentry.push_instruction(IRInstruction::new(IRInstructionKind::Return(Some(
+        IROperand::Integer(0),
+    ))));
+    foo.add_block(fentry);
+    module.add_function(foo);
+
+    let backend = LlvmTextBackend::new();
+    let context = CodegenContext::new("conflict", CodegenTarget::LlvmIr);
+
+    let err = backend.emit_module(&module, &context).expect_err("should detect conflict");
+    assert!(err.to_string().to_lowercase().contains("conflict"));
+}
+
+#[test]
+fn validate_fails_on_unknown_symbol() {
+    let lifecycle = LlvmLifecycle::new();
+    let mut llvm_module = lifecycle.create_module("unknown").expect("create module");
+
+    // IR with a call to `mystery` but no prototype or definition registered
+    let mut module = IRModule::new("unknown_ir");
+    let mut main = IRFunction::new("main");
+    main.return_type = Some("i64".to_string());
+    let mut entry = BasicBlock::new("entry");
+    entry.push_instruction(IRInstruction::new(IRInstructionKind::Call {
+        target: Some(IRValueId::new("t0".to_string())),
+        callee: "mystery".to_string(),
+        arguments: vec![],
+        original: None,
+    }));
+    entry.push_instruction(IRInstruction::new(IRInstructionKind::Return(Some(
+        IROperand::Integer(0),
+    ))));
+    main.add_block(entry);
+    module.add_function(main);
+
+    let res = lifecycle.validate_full_module(&llvm_module, &module);
+    assert!(res.is_err());
+    let err = res.err().unwrap();
+    assert!(err.to_string().to_lowercase().contains("unknown symbol") || err.to_string().to_lowercase().contains("unknown"));
 }
 
 #[test]

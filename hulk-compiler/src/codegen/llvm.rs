@@ -159,6 +159,20 @@ impl LlvmTextBackend {
         &self.lifecycle
     }
 
+    /// Emit the module and write the textual LLVM IR to `path`.
+    pub fn emit_module_to_path(
+        &self,
+        module: &crate::ir::IRModule,
+        context: &CodegenContext,
+        path: impl AsRef<std::path::Path>,
+    ) -> CodegenResult<()> {
+        let artifact = self.emit_module(module, context)?;
+        artifact
+            .write_to_file(path)
+            .map_err(|e| CodegenError::BackendFailure { message: format!("could not write artifact: {}", e) })?;
+        Ok(())
+    }
+
     /// Convert a compiler type name into the LLVM spelling used in function
     /// signatures and runtime declarations.
     pub(crate) fn llvm_type_for(language_type: Option<&str>) -> String {

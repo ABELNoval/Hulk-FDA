@@ -197,10 +197,9 @@ impl IRBuilder {
     }
 
     pub fn block_exists(&self, function_name: &str, block_name: &str) -> bool {
-        if let Some(func) = self.module.function(function_name) {
-            func.block(&BasicBlockId::new(block_name)).is_some()
-        } else {
-            false
+        match self.module.function(function_name) {
+            Some(func) => func.block(&BasicBlockId::new(block_name)).is_some(),
+            None => false,
         }
     }
 
@@ -262,18 +261,23 @@ impl IRBuilder {
             }
         }
 
-        if let Some(entry_expression) = &program.entry_expression {
-            let result = self.lower_expr(entry_expression)?;
-            if !self.current_block_terminated()? {
-                self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
-                    IROperand::Value(result),
-                ))))?;
+        match &program.entry_expression {
+            Some(entry_expression) => {
+                let result = self.lower_expr(entry_expression)?;
+                if !self.current_block_terminated()? {
+                    self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
+                        IROperand::Value(result),
+                    ))))?;
+                }
             }
-        } else if !self.current_block_terminated()? {
-            let result = self.emit_constant_boolean(false, IRValueKind::Temporary)?;
-            self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
-                IROperand::Value(result),
-            ))))?;
+            None => {
+                if !self.current_block_terminated()? {
+                    let result = self.emit_constant_boolean(false, IRValueKind::Temporary)?;
+                    self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
+                        IROperand::Value(result),
+                    ))))?;
+                }
+            }
         }
 
         self.pop_scope();
@@ -343,10 +347,9 @@ impl IRBuilder {
         &mut self,
         variable: &VariableDeclaration,
     ) -> Result<IRValueId, IRLoweringError> {
-        let value_id = if let Some(initializer) = &variable.value {
-            self.lower_expr(initializer)?
-        } else {
-            self.emit_constant_boolean(false, IRValueKind::Temporary)?
+        let value_id = match &variable.value {
+            Some(initializer) => self.lower_expr(initializer)?,
+            None => self.emit_constant_boolean(false, IRValueKind::Temporary)?,
         };
 
         let target = self.fresh_value();
@@ -439,7 +442,7 @@ impl IRBuilder {
         &mut self,
         operator: &UnaryOperator,
         operand: &Expr,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let operand_value = self.lower_expr(operand)?;
 
@@ -467,7 +470,7 @@ impl IRBuilder {
         left: &Expr,
         operator: &BinaryOperator,
         right: &Expr,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let left_value = self.lower_expr(left)?;
         let right_value = self.lower_expr(right)?;
@@ -553,24 +556,27 @@ impl IRBuilder {
             BinaryOperator::Concat | BinaryOperator::Concatenate => None,
         };
 
-        if let Some(instruction) = instruction {
-            self.emit(IRInstruction::new(instruction))?;
-            Ok(target)
-        } else {
-            let callee = match operator {
-                BinaryOperator::Power => "pow",
-                BinaryOperator::Modulo => "mod",
-                BinaryOperator::Concat | BinaryOperator::Concatenate => "concat",
-                _ => unreachable!(),
-            };
-            self.emit_call_with_values(callee, vec![left_value, right_value])
+        match instruction {
+            Some(instruction) => {
+                self.emit(IRInstruction::new(instruction))?;
+                Ok(target)
+            }
+            None => {
+                let callee = match operator {
+                    BinaryOperator::Power => "pow",
+                    BinaryOperator::Modulo => "mod",
+                    BinaryOperator::Concat | BinaryOperator::Concatenate => "concat",
+                    _ => unreachable!(),
+                };
+                self.emit_call_with_values(callee, vec![left_value, right_value])
+            }
         }
     }
 
     fn lower_block(
         &mut self,
         expressions: &[Expr],
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         self.push_scope();
         let mut last_value = self.emit_constant_boolean(false, IRValueKind::Temporary)?;
@@ -594,7 +600,7 @@ impl IRBuilder {
         &mut self,
         callee: &Expr,
         arguments: &[Expr],
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let callee_name = self.resolve_callee(callee)?;
         let argument_values = arguments
@@ -651,16 +657,18 @@ impl IRBuilder {
                 ));
             }
 
-            if let Some(nested_if) = nested_else {
-                if let ExprKind::If {
-                    condition,
-                    then_expr,
-                    elif_parts,
-                    else_expr,
-                } = nested_if.kind
-                {
-                    return self.lower_if(&condition, &then_expr, &elif_parts, &else_expr, expr);
-                }
+            if let Some(Expr {
+                kind:
+                    ExprKind::If {
+                        condition,
+                        then_expr,
+                        elif_parts,
+                        else_expr,
+                    },
+                ..
+            }) = nested_else
+            {
+                return self.lower_if(&condition, &then_expr, &elif_parts, &else_expr, expr);
             }
         }
 
@@ -702,10 +710,9 @@ impl IRBuilder {
 
         self.set_current_block(function_name.clone(), else_name)?;
         self.scopes = saved_scopes;
-        let else_value = if let Some(else_expr) = else_expr {
-            self.lower_expr(else_expr)?
-        } else {
-            self.emit_constant_boolean(false, IRValueKind::Temporary)?
+        let else_value = match else_expr {
+            Some(else_expr) => self.lower_expr(else_expr)?,
+            None => self.emit_constant_boolean(false, IRValueKind::Temporary)?,
         };
         if !self.current_block_terminated()? {
             self.emit(IRInstruction::new(IRInstructionKind::Jump {
@@ -728,7 +735,7 @@ impl IRBuilder {
         &mut self,
         condition: &Expr,
         body: &Expr,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let function_name = self.current_function_name()?.to_string();
         let current_block = self.current_block_id()?.clone();
@@ -787,7 +794,7 @@ impl IRBuilder {
         variable: &str,
         iterable: &Expr,
         body: &Expr,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let function_name = self.current_function_name()?.to_string();
         let current_block = self.current_block_id()?.clone();
@@ -848,12 +855,11 @@ impl IRBuilder {
         name: &str,
         annotation: &Option<TypeReference>,
         value: Option<&Expr>,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
-        let value_id = if let Some(inner) = value {
-            self.lower_expr(inner)?
-        } else {
-            self.emit_constant_boolean(false, IRValueKind::Temporary)?
+        let value_id = match value {
+            Some(inner) => self.lower_expr(inner)?,
+            None => self.emit_constant_boolean(false, IRValueKind::Temporary)?,
         };
 
         let target = self.fresh_value();
@@ -872,7 +878,7 @@ impl IRBuilder {
     fn lower_return(
         &mut self,
         value: Option<&Expr>,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let operand = value
             .as_ref()
@@ -894,7 +900,7 @@ impl IRBuilder {
         self.emit(IRInstruction::new(IRInstructionKind::Jump {
             target: loop_context.break_block,
         }))?;
-        Ok(self.emit_constant_boolean(false, IRValueKind::Temporary)?)
+        self.emit_constant_boolean(false, IRValueKind::Temporary)
     }
 
     fn lower_continue(&mut self, expr: &Expr) -> Result<IRValueId, IRLoweringError> {
@@ -905,14 +911,14 @@ impl IRBuilder {
         self.emit(IRInstruction::new(IRInstructionKind::Jump {
             target: loop_context.continue_block,
         }))?;
-        Ok(self.emit_constant_boolean(false, IRValueKind::Temporary)?)
+        self.emit_constant_boolean(false, IRValueKind::Temporary)
     }
 
     fn lower_member_access(
         &mut self,
         object: &Expr,
         member: &str,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let object_value = self.lower_expr(object)?;
         self.emit_call_with_values(&format!("member.{}", member), vec![object_value])
@@ -922,7 +928,7 @@ impl IRBuilder {
         &mut self,
         object: &Expr,
         index: &Expr,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let object_value = self.lower_expr(object)?;
         let index_value = self.lower_expr(index)?;
@@ -933,7 +939,7 @@ impl IRBuilder {
         &mut self,
         inner: &Expr,
         type_ref: &TypeReference,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let value = self.lower_expr(inner)?;
         self.emit_call_with_values(&format!("is_{}", type_ref.display_name()), vec![value])
@@ -943,7 +949,7 @@ impl IRBuilder {
         &mut self,
         inner: &Expr,
         type_ref: &TypeReference,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let value = self.lower_expr(inner)?;
         self.emit_call_with_values(&format!("as_{}", type_ref.display_name()), vec![value])
@@ -953,7 +959,7 @@ impl IRBuilder {
         &mut self,
         type_ref: &TypeReference,
         arguments: &[Expr],
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let argument_values = arguments
             .iter()
@@ -971,7 +977,7 @@ impl IRBuilder {
     fn lower_base(
         &mut self,
         member: Option<&str>,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let base_name = member
             .map(|name| format!("base.{}", name))
@@ -982,7 +988,7 @@ impl IRBuilder {
     fn lower_vector_literal(
         &mut self,
         elements: &[Expr],
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let element_values = elements
             .iter()
@@ -996,7 +1002,7 @@ impl IRBuilder {
         element_expr: &Expr,
         binding: &str,
         iterable: &Expr,
-        expr: &Expr,
+        _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let iterable_value = self.lower_expr(iterable)?;
         let element_value = self.lower_expr(element_expr)?;

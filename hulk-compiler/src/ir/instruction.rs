@@ -136,45 +136,65 @@ impl IRInstruction {
     pub fn used_values(&self) -> Vec<IRValueId> {
         let mut vals = Vec::new();
         match &self.kind {
-            IRInstructionKind::Assign { value, .. } => {
-                if let IROperand::Value(id) = value {
-                    vals.push(id.clone());
-                }
+            IRInstructionKind::Assign {
+                value: IROperand::Value(id),
+                ..
+            } => {
+                vals.push(id.clone());
             }
-            IRInstructionKind::Binary { left, right, .. } => {
-                if let IROperand::Value(l) = left {
-                    vals.push(l.clone());
-                }
+            IRInstructionKind::Binary {
+                left: IROperand::Value(l),
+                right: IROperand::Value(r),
+                ..
+            } => {
+                vals.push(l.clone());
+                vals.push(r.clone());
+            }
+            IRInstructionKind::Binary {
+                left: IROperand::Value(l),
+                right,
+                ..
+            } => {
+                vals.push(l.clone());
                 if let IROperand::Value(r) = right {
                     vals.push(r.clone());
                 }
             }
-            IRInstructionKind::Unary { operand, .. } => {
-                if let IROperand::Value(o) = operand {
-                    vals.push(o.clone());
+            IRInstructionKind::Binary {
+                left,
+                right: IROperand::Value(r),
+                ..
+            } => {
+                if let IROperand::Value(l) = left {
+                    vals.push(l.clone());
                 }
+                vals.push(r.clone());
+            }
+            IRInstructionKind::Unary {
+                operand: IROperand::Value(o),
+                ..
+            } => {
+                vals.push(o.clone());
             }
             IRInstructionKind::Phi { incoming, .. } => {
                 for (v, _) in incoming {
                     vals.push(v.clone());
                 }
             }
-            IRInstructionKind::Branch { condition, .. } => {
-                if let IROperand::Value(c) = condition {
-                    vals.push(c.clone());
-                }
+            IRInstructionKind::Branch {
+                condition: IROperand::Value(c),
+                ..
+            } => {
+                vals.push(c.clone());
             }
-            IRInstructionKind::Return(Some(op)) => {
-                if let IROperand::Value(v) = op {
-                    vals.push(v.clone());
-                }
+            IRInstructionKind::Return(Some(IROperand::Value(v))) => {
+                vals.push(v.clone());
             }
             IRInstructionKind::Call { arguments, .. } => {
-                for arg in arguments {
-                    if let IROperand::Value(a) = arg {
-                        vals.push(a.clone());
-                    }
-                }
+                vals.extend(arguments.iter().filter_map(|arg| match arg {
+                    IROperand::Value(a) => Some(a.clone()),
+                    _ => None,
+                }));
             }
             _ => {}
         }

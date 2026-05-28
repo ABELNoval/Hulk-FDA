@@ -17,14 +17,17 @@ impl LlvmTextBackend {
 
     fn render_operand(&self, operand: &IROperand) -> String {
         match operand {
-            IROperand::Value(id) => format!("%{}", id.0),
+            IROperand::Value(id) => format!("%{}", id.0.trim_start_matches('%')),
             IROperand::Integer(value) => value.to_string(),
-            IROperand::Float(value) => value.to_string(),
+            IROperand::Float(value) => {
+                // LLVM floats must be formatted in IEEE 754 hexadecimal to ensure precision
+                format!("0x{:016X}", value.to_bits())
+            }
             IROperand::Boolean(value) => {
                 if *value {
-                    "1".to_string()
+                    "true".to_string()
                 } else {
-                    "0".to_string()
+                    "false".to_string()
                 }
             }
             IROperand::Text(value) => format!("\"{}\"", value),
@@ -65,7 +68,26 @@ impl LlvmTextBackend {
             for instruction in &block.instructions {
                 let line = match &instruction.kind {
                     IRInstructionKind::Assign { target, value, .. } => {
-                        format!("  ; {} = {}", target.0, self.render_operand(value))
+                        // TODO: Support precise types. Defaulting to i64 unless Boolean.
+                        let ty = match value {
+                            IROperand::Boolean(_) => "i1",
+                            IROperand::Float(_) => "double",
+                            IROperand::Text(_) => "ptr",
+                            _ => "i64",
+                        };
+                        let base_name = target.0.trim_start_matches('%');
+                        let addr = format!("%{}.addr", base_name);
+                        format!(
+                            "  {} = alloca {}\n  store {} {}, ptr {}\n  {} = load {}, ptr {}",
+                            addr,
+                            ty,
+                            ty,
+                            self.render_operand(value),
+                            addr,
+                            target.0,
+                            ty,
+                            addr
+                        )
                     }
                     IRInstructionKind::Binary {
                         target,
@@ -87,10 +109,15 @@ impl LlvmTextBackend {
                             crate::ir::IRBinaryOp::Gt => "icmp sgt",
                             crate::ir::IRBinaryOp::Ge => "icmp sge",
                         };
+                        let ty = match op {
+                            crate::ir::IRBinaryOp::And | crate::ir::IRBinaryOp::Or => "i1",
+                            _ => "i64", // default arithmetic type
+                        };
                         format!(
-                            "  ; {} = {} {}, {}",
+                            "  {} = {} {} {}, {}",
                             target.0,
                             op_name,
+                            ty,
                             self.render_operand(left),
                             self.render_operand(right)
                         )
@@ -100,20 +127,26 @@ impl LlvmTextBackend {
                         op,
                         operand,
                     } => {
-                        let op_name = match op {
-                            crate::ir::IRUnaryOp::Neg => "sub",
-                            crate::ir::IRUnaryOp::Not => "xor",
-                        };
-                        format!(
-                            "  ; {} = {} {}",
-                            target.0,
-                            op_name,
-                            self.render_operand(operand)
-                        )
+                        match op {
+                            crate::ir::IRUnaryOp::Neg => {
+                                format!("  {} = sub i64 0, {}", target.0, self.render_operand(operand))
+                            }
+                            crate::ir::IRUnaryOp::Not => {
+                                format!("  {} = xor i1 true, {}", target.0, self.render_operand(operand))
+                            }
+                        }
                     }
                     IRInstructionKind::Phi {
                         target, incoming, ..
                     } => {
+                        if incoming.is_empty() {
+                            return Err(CodegenError::UnsupportedInstruction {
+                                function: function.name.clone(),
+                                block: block.id.0.clone(),
+                                message: format!("phi node for target '{}' has no incoming edges", target.0),
+                            });
+                        }
+                        
                         let values = incoming
                             .iter()
                             .map(|(value, block)| {
@@ -125,7 +158,8 @@ impl LlvmTextBackend {
                             })
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!("  ; {} = phi {}", target.0, values)
+                        // TODO: Support precise types. Defaulting to i64.
+                        format!("  {} = phi i64 {}", target.0, values)
                     }
                     IRInstructionKind::Jump { target } => format!("  br label %{}", target.0),
                     IRInstructionKind::Branch {
@@ -139,12 +173,7 @@ impl LlvmTextBackend {
                         else_block.0
                     ),
                     IRInstructionKind::Return(Some(operand)) => {
-                        let ty = match operand {
-                            IROperand::Boolean(_) => "i1",
-                            IROperand::Float(_) => "double",
-                            IROperand::Text(_) => "ptr",
-                            _ => "i64",
-                        };
+                        let ty = self.render_type(function.return_type.as_deref());
                         format!("  ret {} {}", ty, self.render_operand(operand))
                     }
                     IRInstructionKind::Return(None) => "  ret void".to_string(),
@@ -154,14 +183,36 @@ impl LlvmTextBackend {
                         arguments,
                         ..
                     } => {
+                        let ret_ty = module
+                            .function(callee)
+                            .map(|f| self.render_type(f.return_type.as_deref()))
+                            .unwrap_or("i64");
+
+                        if target.is_some() && ret_ty == "void" {
+                            return Err(CodegenError::UnsupportedInstruction {
+                                function: function.name.clone(),
+                                block: block.id.0.clone(),
+                                message: format!("cannot assign result of void function '{}'", callee),
+                            });
+                        }
+
                         let args = arguments
                             .iter()
-                            .map(|arg| self.render_operand(arg))
+                            .map(|arg| {
+                                let arg_ty = match arg {
+                                    IROperand::Boolean(_) => "i1",
+                                    IROperand::Float(_) => "double",
+                                    IROperand::Text(_) => "ptr",
+                                    _ => "i64",
+                                };
+                                format!("{} {}", arg_ty, self.render_operand(arg))
+                            })
                             .collect::<Vec<_>>()
                             .join(", ");
+
                         match target {
-                            Some(value) => format!("  ; {} = call @{}({})", value.0, callee, args),
-                            None => format!("  ; call @{}({})", callee, args),
+                            Some(value) => format!("  {} = call {} @{}({})", value.0, ret_ty, callee, args),
+                            None => format!("  call {} @{}({})", ret_ty, callee, args),
                         }
                     }
                     IRInstructionKind::Nop => "  ; nop".to_string(),

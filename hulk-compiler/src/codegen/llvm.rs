@@ -2,7 +2,7 @@ use crate::ir::{IRInstructionKind, IRModule, IROperand};
 
 use super::artifact::CodegenArtifact;
 use super::backend::CodegenBackend;
-use super::context::{CodegenContext, CodegenTarget, LlvmContext, LlvmModule, LlvmBuilder};
+use super::context::{CodegenContext, CodegenTarget, LlvmBuilder, LlvmContext, LlvmModule};
 use super::error::{CodegenError, CodegenResult};
 
 // =============================================================================
@@ -44,7 +44,8 @@ impl LlvmLifecycle {
 
     /// Create a builder for module construction.
     pub fn create_builder(&self, module: LlvmModule) -> CodegenResult<LlvmBuilder> {
-        module.verify_context(&self.context)
+        module
+            .verify_context(&self.context)
             .map_err(|e| CodegenError::BackendFailure { message: e })?;
 
         Ok(LlvmBuilder::new(module))
@@ -52,7 +53,8 @@ impl LlvmLifecycle {
 
     /// Validate that a module is properly constructed before emission.
     pub fn validate_module(&self, module: &LlvmModule) -> CodegenResult<()> {
-        module.verify_context(&self.context)
+        module
+            .verify_context(&self.context)
             .map_err(|e| CodegenError::BackendFailure { message: e })?;
 
         if module.symbols().is_empty() {
@@ -67,9 +69,14 @@ impl LlvmLifecycle {
 
     /// Validate module consistency against the IRModule and (optionally) an external verifier.
     /// This performs cross-checks between prototypes, runtime declarations and IR call sites.
-    pub fn validate_full_module(&self, llvm_module: &LlvmModule, ir_module: &crate::ir::IRModule) -> CodegenResult<()> {
+    pub fn validate_full_module(
+        &self,
+        llvm_module: &LlvmModule,
+        ir_module: &crate::ir::IRModule,
+    ) -> CodegenResult<()> {
         // Basic context check
-        llvm_module.verify_context(&self.context)
+        llvm_module
+            .verify_context(&self.context)
             .map_err(|e| CodegenError::BackendFailure { message: e })?;
 
         // Ensure there is at least one symbol defined (same as before)
@@ -84,20 +91,33 @@ impl LlvmLifecycle {
         for func in &ir_module.functions {
             for block in &func.blocks {
                 for instr in &block.instructions {
-                    if let crate::ir::IRInstructionKind::Call { callee, arguments, .. } = &instr.kind {
+                    if let crate::ir::IRInstructionKind::Call {
+                        callee, arguments, ..
+                    } = &instr.kind
+                    {
                         // prefer symbols -> prototypes -> runtime_decls
                         if let Some((_, params)) = llvm_module.symbols().get(callee) {
                             if params.len() != arguments.len() {
                                 return Err(CodegenError::InvalidModule {
                                     module: llvm_module.name().to_string(),
-                                    message: format!("Call to '{}' has {} args but definition has {} parameters", callee, arguments.len(), params.len()),
+                                    message: format!(
+                                        "Call to '{}' has {} args but definition has {} parameters",
+                                        callee,
+                                        arguments.len(),
+                                        params.len()
+                                    ),
                                 });
                             }
                         } else if let Some((_, params, _)) = llvm_module.prototypes().get(callee) {
                             if params.len() != arguments.len() {
                                 return Err(CodegenError::InvalidModule {
                                     module: llvm_module.name().to_string(),
-                                    message: format!("Call to '{}' has {} args but prototype has {} parameters", callee, arguments.len(), params.len()),
+                                    message: format!(
+                                        "Call to '{}' has {} args but prototype has {} parameters",
+                                        callee,
+                                        arguments.len(),
+                                        params.len()
+                                    ),
                                 });
                             }
                         } else if llvm_module.runtime_decls().contains_key(callee) {
@@ -169,7 +189,9 @@ impl LlvmTextBackend {
         let artifact = self.emit_module(module, context)?;
         artifact
             .write_to_file(path)
-            .map_err(|e| CodegenError::BackendFailure { message: format!("could not write artifact: {}", e) })?;
+            .map_err(|e| CodegenError::BackendFailure {
+                message: format!("could not write artifact: {}", e),
+            })?;
         Ok(())
     }
 
@@ -233,7 +255,13 @@ impl LlvmTextBackend {
         let params = function
             .parameters
             .iter()
-            .map(|param| format!("{} %{}", Self::llvm_type_for(param.ty.as_deref()), param.id.0))
+            .map(|param| {
+                format!(
+                    "{} %{}",
+                    Self::llvm_type_for(param.ty.as_deref()),
+                    param.id.0
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -303,16 +331,22 @@ impl LlvmTextBackend {
                         target,
                         op,
                         operand,
-                    } => {
-                        match op {
-                            crate::ir::IRUnaryOp::Neg => {
-                                format!("  {} = sub i64 0, {}", target.0, self.render_operand(operand))
-                            }
-                            crate::ir::IRUnaryOp::Not => {
-                                format!("  {} = xor i1 true, {}", target.0, self.render_operand(operand))
-                            }
+                    } => match op {
+                        crate::ir::IRUnaryOp::Neg => {
+                            format!(
+                                "  {} = sub i64 0, {}",
+                                target.0,
+                                self.render_operand(operand)
+                            )
                         }
-                    }
+                        crate::ir::IRUnaryOp::Not => {
+                            format!(
+                                "  {} = xor i1 true, {}",
+                                target.0,
+                                self.render_operand(operand)
+                            )
+                        }
+                    },
                     IRInstructionKind::Phi {
                         target, incoming, ..
                     } => {
@@ -320,10 +354,13 @@ impl LlvmTextBackend {
                             return Err(CodegenError::UnsupportedInstruction {
                                 function: function.name.clone(),
                                 block: block.id.0.clone(),
-                                message: format!("phi node for target '{}' has no incoming edges", target.0),
+                                message: format!(
+                                    "phi node for target '{}' has no incoming edges",
+                                    target.0
+                                ),
                             });
                         }
-                        
+
                         let values = incoming
                             .iter()
                             .map(|(value, block)| {
@@ -369,7 +406,10 @@ impl LlvmTextBackend {
                             return Err(CodegenError::UnsupportedInstruction {
                                 function: function.name.clone(),
                                 block: block.id.0.clone(),
-                                message: format!("cannot assign result of void function '{}'", callee),
+                                message: format!(
+                                    "cannot assign result of void function '{}'",
+                                    callee
+                                ),
                             });
                         }
 
@@ -388,7 +428,9 @@ impl LlvmTextBackend {
                             .join(", ");
 
                         match target {
-                            Some(value) => format!("  {} = call {} @{}({})", value.0, ret_ty, callee, args),
+                            Some(value) => {
+                                format!("  {} = call {} @{}({})", value.0, ret_ty, callee, args)
+                            }
                             None => format!("  call {} @{}({})", ret_ty, callee, args),
                         }
                     }
@@ -459,7 +501,10 @@ impl CodegenBackend for LlvmTextBackend {
         for func in &module.functions {
             for block in &func.blocks {
                 for instr in &block.instructions {
-                    if let IRInstructionKind::Call { callee, arguments, .. } = &instr.kind {
+                    if let IRInstructionKind::Call {
+                        callee, arguments, ..
+                    } = &instr.kind
+                    {
                         if module.function(&callee).is_some() {
                             continue;
                         }
@@ -467,14 +512,19 @@ impl CodegenBackend for LlvmTextBackend {
                             continue;
                         }
 
-                        let params = arguments.iter().map(|arg| infer_operand_ty(arg)).collect::<Vec<_>>();
+                        let params = arguments
+                            .iter()
+                            .map(|arg| infer_operand_ty(arg))
+                            .collect::<Vec<_>>();
                         let ret = if params.iter().any(|p| p == "double") {
                             "double".to_string()
                         } else {
                             "i64".to_string()
                         };
 
-                        extern_prototypes.entry(callee.clone()).or_insert((ret, params));
+                        extern_prototypes
+                            .entry(callee.clone())
+                            .or_insert((ret, params));
                     }
                 }
             }
@@ -504,14 +554,23 @@ impl CodegenBackend for LlvmTextBackend {
         // Begin emitting output header and declarations
         let mut output = String::new();
         output.push_str(&format!("; ModuleID = '{}'\n", context.module_name));
-        output.push_str(&format!("target triple = \"{}\"\n", context.resolved_target_triple()));
-        output.push_str(&format!("target datalayout = \"{}\"\n", context.resolved_data_layout()));
+        output.push_str(&format!(
+            "target triple = \"{}\"\n",
+            context.resolved_target_triple()
+        ));
+        output.push_str(&format!(
+            "target datalayout = \"{}\"\n",
+            context.resolved_data_layout()
+        ));
         output.push('\n');
 
         // Emit runtime declarations first (declare ...)
         for (name, (ret_ty, params)) in llvm_module.runtime_decls() {
             let params_joined = params.join(", ");
-            output.push_str(&format!("declare {} @{}({})\n", ret_ty, name, params_joined));
+            output.push_str(&format!(
+                "declare {} @{}({})\n",
+                ret_ty, name, params_joined
+            ));
         }
 
         output.push('\n');
@@ -522,7 +581,10 @@ impl CodegenBackend for LlvmTextBackend {
                 continue;
             }
             let params_joined = params.join(", ");
-            output.push_str(&format!("declare {} @{}({})\n", ret_ty, name, params_joined));
+            output.push_str(&format!(
+                "declare {} @{}({})\n",
+                ret_ty, name, params_joined
+            ));
         }
 
         output.push('\n');
@@ -535,7 +597,10 @@ impl CodegenBackend for LlvmTextBackend {
         // Validate module consistency against the IR
         self.lifecycle
             .validate_full_module(&llvm_module, module)
-            .map_err(|e| CodegenError::InvalidModule { module: module.name.clone(), message: format!("validation failed: {}", e) })?;
+            .map_err(|e| CodegenError::InvalidModule {
+                module: module.name.clone(),
+                message: format!("validation failed: {}", e),
+            })?;
 
         Ok(CodegenArtifact::text(CodegenTarget::LlvmIr, output))
     }

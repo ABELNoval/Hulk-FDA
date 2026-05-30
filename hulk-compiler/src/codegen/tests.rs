@@ -14,9 +14,11 @@
 // Organizer / QA owns these smoke tests because they validate the contract
 // between the backend scaffold and the LLVM lowering implementation.
 
-use crate::codegen::{CodegenBackend, CodegenContext, CodegenTarget, LlvmTextBackend};
 use crate::codegen::LlvmLifecycle;
-use crate::ir::{BasicBlock, IRFunction, IRInstruction, IRInstructionKind, IRModule, IRValueId, IROperand};
+use crate::codegen::{CodegenBackend, CodegenContext, CodegenTarget, LlvmTextBackend};
+use crate::ir::{
+    BasicBlock, IRFunction, IRInstruction, IRInstructionKind, IRModule, IROperand, IRValueId,
+};
 
 fn sample_module() -> IRModule {
     let mut module = IRModule::new("sample");
@@ -67,7 +69,9 @@ fn backend_uses_custom_target_configuration() {
     let text = artifact.as_text().expect("expected text output");
 
     assert!(text.contains("target triple = \"aarch64-unknown-linux-gnu\""));
-    assert!(text.contains("target datalayout = \"e-m:e-p:64:64-i64:64-v128:128-a:0:64-n32:64-S128\""));
+    assert!(
+        text.contains("target datalayout = \"e-m:e-p:64:64-i64:64-v128:128-a:0:64-n32:64-S128\"")
+    );
 }
 
 #[test]
@@ -125,14 +129,16 @@ fn backend_detects_signature_conflict() {
     let backend = LlvmTextBackend::new();
     let context = CodegenContext::new("conflict", CodegenTarget::LlvmIr);
 
-    let err = backend.emit_module(&module, &context).expect_err("should detect conflict");
+    let err = backend
+        .emit_module(&module, &context)
+        .expect_err("should detect conflict");
     assert!(err.to_string().to_lowercase().contains("conflict"));
 }
 
 #[test]
 fn validate_fails_on_unknown_symbol() {
     let lifecycle = LlvmLifecycle::new();
-    let mut llvm_module = lifecycle.create_module("unknown").expect("create module");
+    let llvm_module = lifecycle.create_module("unknown").expect("create module");
 
     // IR with a call to `mystery` but no prototype or definition registered
     let mut module = IRModule::new("unknown_ir");
@@ -154,7 +160,10 @@ fn validate_fails_on_unknown_symbol() {
     let res = lifecycle.validate_full_module(&llvm_module, &module);
     assert!(res.is_err());
     let err = res.err().unwrap();
-    assert!(err.to_string().to_lowercase().contains("unknown symbol") || err.to_string().to_lowercase().contains("unknown"));
+    assert!(
+        err.to_string().to_lowercase().contains("unknown symbol")
+            || err.to_string().to_lowercase().contains("unknown")
+    );
 }
 
 #[test]

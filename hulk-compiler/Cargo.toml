@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 
 [dependencies.inkwell]
-version = "0.1"
+version = "0.9.0"
+features = ["llvm16-0", "llvm16-0-prefer-dynamic"]
 optional = true
 
 [features]

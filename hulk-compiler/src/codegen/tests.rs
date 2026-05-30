@@ -83,7 +83,7 @@ fn backend_writes_llvm_text_to_file() {
     let mut path = std::env::temp_dir();
     path.push(format!("hulk_llvm_{}.ll", std::process::id()));
 
-    let _ = backend
+    backend
         .emit_module_to_path(&module, &context, &path)
         .expect("should write artifact");
 

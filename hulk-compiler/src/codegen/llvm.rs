@@ -224,6 +224,10 @@ impl LlvmTextBackend {
         }
     }
 
+    fn render_type(&self, language_type: Option<&str>) -> String {
+        Self::llvm_type_for(language_type)
+    }
+
     fn render_operand(&self, operand: &IROperand) -> String {
         match operand {
             IROperand::Value(id) => format!("%{}", id.0.trim_start_matches('%')),
@@ -400,7 +404,7 @@ impl LlvmTextBackend {
                         let ret_ty = module
                             .function(callee)
                             .map(|f| self.render_type(f.return_type.as_deref()))
-                            .unwrap_or("i64");
+                            .unwrap_or_else(|| "i64".to_string());
 
                         if target.is_some() && ret_ty == "void" {
                             return Err(CodegenError::UnsupportedInstruction {
@@ -464,6 +468,7 @@ impl CodegenBackend for LlvmTextBackend {
         module: &IRModule,
         context: &CodegenContext,
     ) -> CodegenResult<CodegenArtifact> {
+        
         if context.target != CodegenTarget::LlvmIr {
             return Err(CodegenError::BackendFailure {
                 message: format!(
@@ -505,17 +510,14 @@ impl CodegenBackend for LlvmTextBackend {
                         callee, arguments, ..
                     } = &instr.kind
                     {
-                        if module.function(&callee).is_some() {
+                        if module.function(callee).is_some() {
                             continue;
                         }
                         if llvm_module.runtime_decls().contains_key(callee) {
                             continue;
                         }
 
-                        let params = arguments
-                            .iter()
-                            .map(|arg| infer_operand_ty(arg))
-                            .collect::<Vec<_>>();
+                        let params = arguments.iter().map(infer_operand_ty).collect::<Vec<_>>();
                         let ret = if params.iter().any(|p| p == "double") {
                             "double".to_string()
                         } else {

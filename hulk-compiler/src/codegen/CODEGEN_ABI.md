@@ -32,7 +32,7 @@ Retorno de valores
 
 Runtime y funciones externas
 ---------------------------
-- El backend registra y declara helpers runtime por defecto: 
+- El backend registra y declara helpers runtime por defecto:
   - `declare void @print(ptr)`
   - `declare ptr @hulk_alloc(i64)`
   - `declare void @hulk_free(ptr)`

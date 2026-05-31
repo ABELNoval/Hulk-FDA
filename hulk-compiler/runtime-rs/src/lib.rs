@@ -1,14 +1,20 @@
-use std::os::raw::{c_char, c_long, c_void};
+use std::os::raw::{c_char, c_double, c_int, c_long, c_void};
+
+extern "C" {
+    fn __entry() -> c_long;
+}
 
 #[no_mangle]
-pub extern "C" fn print(ptr: *const c_char) {
-    if ptr.is_null() {
-        return;
-    }
+pub extern "C" fn print(value: c_double) {
     unsafe {
         // Use libc printf to avoid pulling extra Rust-formatting dependencies at link time
-        libc::printf(b"%s\0".as_ptr() as *const c_char, ptr);
+        libc::printf(b"%g\n\0".as_ptr() as *const c_char, value);
     }
+}
+
+#[no_mangle]
+pub extern "C" fn main() -> c_int {
+    unsafe { __entry() as c_int }
 }
 
 #[no_mangle]

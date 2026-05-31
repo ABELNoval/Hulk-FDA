@@ -250,7 +250,7 @@ impl IRBuilder {
     fn lower_entry_function(&mut self, program: &Program) -> Result<(), IRLoweringError> {
         let entry_name = "__entry".to_string();
 
-        self.create_function(entry_name.clone(), Vec::new(), None)?;
+        self.create_function(entry_name.clone(), Vec::new(), Some("i64".to_string()))?;
         self.create_block_in_function(&entry_name, "entry")?;
         self.set_current_block(entry_name.clone(), "entry")?;
         self.push_scope();
@@ -263,21 +263,17 @@ impl IRBuilder {
 
         match &program.entry_expression {
             Some(entry_expression) => {
-                let result = self.lower_expr(entry_expression)?;
-                if !self.current_block_terminated()? {
-                    self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
-                        IROperand::Value(result),
-                    ))))?;
-                }
+                let _ = self.lower_expr(entry_expression)?;
             }
             None => {
-                if !self.current_block_terminated()? {
-                    let result = self.emit_constant_boolean(false, IRValueKind::Temporary)?;
-                    self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
-                        IROperand::Value(result),
-                    ))))?;
-                }
+                // No top-level entry expression: keep the wrapper valid and return 0.
             }
+        }
+
+        if !self.current_block_terminated()? {
+            self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
+                IROperand::Integer(0),
+            ))))?;
         }
 
         self.pop_scope();
@@ -703,6 +699,8 @@ impl IRBuilder {
         self.scopes = saved_scopes.clone();
         let then_value = self.lower_expr(then_expr)?;
         if !self.current_block_terminated()? {
+            let then_current = self.current_block_id()?.clone();
+            self.link_blocks(&function_name, &then_current, &merge_block)?;
             self.emit(IRInstruction::new(IRInstructionKind::Jump {
                 target: merge_block.clone(),
             }))?;
@@ -715,6 +713,8 @@ impl IRBuilder {
             None => self.emit_constant_boolean(false, IRValueKind::Temporary)?,
         };
         if !self.current_block_terminated()? {
+            let else_current = self.current_block_id()?.clone();
+            self.link_blocks(&function_name, &else_current, &merge_block)?;
             self.emit(IRInstruction::new(IRInstructionKind::Jump {
                 target: merge_block.clone(),
             }))?;
@@ -777,6 +777,8 @@ impl IRBuilder {
         self.push_scope();
         let _ = self.lower_expr(body)?;
         if !self.current_block_terminated()? {
+            let body_current = self.current_block_id()?.clone();
+            self.link_blocks(&function_name, &body_current, &cond_block)?;
             self.emit(IRInstruction::new(IRInstructionKind::Jump {
                 target: cond_block,
             }))?;
@@ -838,6 +840,8 @@ impl IRBuilder {
         self.define_variable(variable, next_item);
         let _ = self.lower_expr(body)?;
         if !self.current_block_terminated()? {
+            let body_current = self.current_block_id()?.clone();
+            self.link_blocks(&function_name, &body_current, &cond_block)?;
             self.emit(IRInstruction::new(IRInstructionKind::Jump {
                 target: cond_block,
             }))?;
@@ -897,6 +901,10 @@ impl IRBuilder {
                 Self::error_at(expr.span.clone(), "'break' used outside of a loop")
             })?;
 
+        let function_name = self.current_function_name()?.to_string();
+        let current_block = self.current_block_id()?.clone();
+        self.link_blocks(&function_name, &current_block, &loop_context.break_block)?;
+
         self.emit(IRInstruction::new(IRInstructionKind::Jump {
             target: loop_context.break_block,
         }))?;
@@ -907,6 +915,10 @@ impl IRBuilder {
         let loop_context = self.loop_stack.last().cloned().ok_or_else(|| {
             Self::error_at(expr.span.clone(), "'continue' used outside of a loop")
         })?;
+
+        let function_name = self.current_function_name()?.to_string();
+        let current_block = self.current_block_id()?.clone();
+        self.link_blocks(&function_name, &current_block, &loop_context.continue_block)?;
 
         self.emit(IRInstruction::new(IRInstructionKind::Jump {
             target: loop_context.continue_block,

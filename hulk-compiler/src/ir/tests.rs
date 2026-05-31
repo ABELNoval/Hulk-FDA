@@ -189,6 +189,7 @@ mod tests_ir {
 
         let mut expected = IRModule::new("module::lowered");
         let mut function = IRFunction::new("__entry");
+        function.return_type = Some("i64".to_string());
         let mut block = BasicBlock::new("entry");
         block.push_instruction(IRInstruction::new(IRInstructionKind::Assign {
             target: crate::ir::IRValueId::new("%t0"),
@@ -207,7 +208,7 @@ mod tests_ir {
             right: IROperand::Value(crate::ir::IRValueId::new("%t1")),
         }));
         block.push_instruction(IRInstruction::new(IRInstructionKind::Return(Some(
-            IROperand::Value(crate::ir::IRValueId::new("%t2")),
+            IROperand::Integer(0),
         ))));
         function.add_block(block);
         expected.add_function(function);

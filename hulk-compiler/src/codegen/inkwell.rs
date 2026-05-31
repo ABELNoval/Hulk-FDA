@@ -50,14 +50,14 @@ impl CodegenBackend for LlvmInkwellBackend {
 #[cfg(feature = "llvm-verify")]
 mod real {
     use super::{
-        CodegenArtifact, CodegenBackend, CodegenContext, CodegenError, CodegenResult,
-        CodegenTarget, IRModule,
+        CodegenArtifact, CodegenBackend, CodegenContext, CodegenError, CodegenResult, IRModule,
     };
+    use crate::codegen::CodegenTarget;
     use inkwell::context::Context;
     use inkwell::targets::{TargetData, TargetTriple};
     use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
     use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, PointerValue};
-    use inkwell::{AddressSpace, IntPredicate};
+    use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 
     use std::collections::HashMap;
 
@@ -136,15 +136,30 @@ mod real {
             crate::ir::IROperand::Boolean(value) => {
                 ctx.bool_type().const_int(u64::from(*value), false).into()
             }
-            crate::ir::IROperand::Text(_) => {
-                ctx.ptr_type(AddressSpace::default()).const_zero().into()
+            crate::ir::IROperand::Text(text) => {
+                builder
+                    .build_global_string_ptr(text, "strlit")
+                    .map(|global| global.as_pointer_value().into())
+                    .map_err(|err| CodegenError::BackendFailure {
+                        message: format!("failed to emit string literal: {:?}", err),
+                    })?
             }
             crate::ir::IROperand::Value(value_id) => {
-                let key = value_id.0.clone();
-                if let Some((ptr, ty)) = allocas.get(&key) {
-                    builder.build_load(*ty, *ptr, &key).map_err(|err| {
+                let raw_key = value_id.0.as_str();
+                let trimmed_key = raw_key.trim_start_matches('%');
+                let prefixed_key = format!("%{}", trimmed_key);
+                let slot = allocas
+                    .get(raw_key)
+                    .or_else(|| allocas.get(trimmed_key))
+                    .or_else(|| allocas.get(prefixed_key.as_str()));
+
+                if let Some((ptr, ty)) = slot {
+                    builder.build_load(*ty, *ptr, trimmed_key).map_err(|err| {
                         CodegenError::BackendFailure {
-                            message: format!("failed to load '{}': {:?}", key, err),
+                            message: format!(
+                                "failed to load '{}' (resolved as '{}'): {:?}",
+                                value_id.0, trimmed_key, err
+                            ),
                         }
                     })?
                 } else {
@@ -204,12 +219,19 @@ mod real {
         ty: BasicTypeEnum<'ctx>,
         allocas: &mut HashMap<String, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
     ) -> CodegenResult<PointerValue<'ctx>> {
-        if let Some((ptr, _)) = allocas.get(name) {
+        let canonical = name.trim_start_matches('%');
+        let prefixed = format!("%{}", canonical);
+
+        if let Some((ptr, _)) = allocas
+            .get(canonical)
+            .or_else(|| allocas.get(prefixed.as_str()))
+        {
             return Ok(*ptr);
         }
 
-        let ptr = create_alloca(builder, name, ty)?;
-        allocas.insert(name.to_string(), (ptr, ty));
+        let ptr = create_alloca(builder, canonical, ty)?;
+        allocas.insert(canonical.to_string(), (ptr, ty));
+        allocas.insert(prefixed, (ptr, ty));
         Ok(ptr)
     }
 
@@ -223,10 +245,17 @@ mod real {
             crate::ir::IROperand::Float(_) => ctx.f64_type().into(),
             crate::ir::IROperand::Boolean(_) => ctx.bool_type().into(),
             crate::ir::IROperand::Text(_) => ctx.ptr_type(AddressSpace::default()).into(),
-            crate::ir::IROperand::Value(value_id) => allocas
-                .get(&value_id.0)
-                .map(|(_, ty)| *ty)
-                .unwrap_or_else(|| ctx.i64_type().into()),
+            crate::ir::IROperand::Value(value_id) => {
+                let raw_key = value_id.0.as_str();
+                let trimmed_key = raw_key.trim_start_matches('%');
+                let prefixed_key = format!("%{}", trimmed_key);
+                allocas
+                    .get(raw_key)
+                    .or_else(|| allocas.get(trimmed_key))
+                    .or_else(|| allocas.get(prefixed_key.as_str()))
+                    .map(|(_, ty)| *ty)
+                    .unwrap_or_else(|| ctx.i64_type().into())
+            }
         }
     }
 
@@ -270,6 +299,12 @@ mod real {
                         } = &instr.kind
                         {
                             if module.function(&callee).is_some() {
+                                continue;
+                            }
+                            if callee == "print" {
+                                extern_prototypes
+                                    .entry(callee.clone())
+                                    .or_insert(("void".to_string(), vec!["double".to_string()]));
                                 continue;
                             }
                             let params = arguments
@@ -350,19 +385,28 @@ mod real {
                                 ),
                             }
                         })?;
-                        allocas.insert(param.id.0.clone(), (slot, param_type));
+                        let raw_param = param.id.0.clone();
+                        let canonical_param = raw_param.trim_start_matches('%').to_string();
+                        let prefixed_param = format!("%{}", canonical_param);
+                        allocas.insert(canonical_param, (slot, param_type));
+                        allocas.insert(prefixed_param, (slot, param_type));
                     }
                 }
 
                 for block in &function.blocks {
-                    let bb = *block_map.get(&block.id.0).ok_or_else(|| CodegenError::BackendFailure {
-                        message: format!("missing LLVM block mapping for '{}'", block.id.0),
+                    let bb = *block_map.get(&block.id.0).ok_or_else(|| {
+                        CodegenError::BackendFailure {
+                            message: format!("missing LLVM block mapping for '{}'", block.id.0),
+                        }
                     })?;
                     builder.position_at_end(bb);
 
                     // First emit PHI nodes so incoming values can be referenced
                     for instr in &block.instructions {
-                        if let IRInstructionKind::Phi { target, incoming, .. } = &instr.kind {
+                        if let IRInstructionKind::Phi {
+                            target, incoming, ..
+                        } = &instr.kind
+                        {
                             if incoming.is_empty() {
                                 return emit_backend_failure(format!(
                                     "phi '{}' has no incoming edges",
@@ -378,24 +422,37 @@ mod real {
                             let phi = builder
                                 .build_phi(phi_ty, target.0.trim_start_matches('%'))
                                 .map_err(|err| CodegenError::BackendFailure {
-                                    message: format!("failed to emit phi '{}': {:?}", target.0, err),
+                                    message: format!(
+                                        "failed to emit phi '{}': {:?}",
+                                        target.0, err
+                                    ),
                                 })?;
 
                             for (value_id, incoming_block) in incoming {
-                                let incoming_value = lower_operand(
-                                    &ctx,
-                                    &builder,
-                                    &allocas,
-                                    &crate::ir::IROperand::Value(value_id.clone()),
-                                )?;
-                                let incoming_bb = *block_map.get(&incoming_block.0).ok_or_else(|| {
-                                    CodegenError::BackendFailure {
+                                let incoming_bb = *block_map.get(&incoming_block.0).ok_or_else(
+                                    || CodegenError::BackendFailure {
                                         message: format!(
                                             "phi incoming block '{}' missing from function '{}'",
                                             incoming_block.0, function.name
                                         ),
+                                    },
+                                )?;
+                                let phi_incoming_builder = ctx.create_builder();
+                                let terminator = incoming_bb.get_terminator().ok_or_else(|| {
+                                    CodegenError::BackendFailure {
+                                        message: format!(
+                                            "phi incoming block '{}' has no terminator in function '{}'",
+                                            incoming_block.0, function.name
+                                        ),
                                     }
                                 })?;
+                                phi_incoming_builder.position_before(&terminator);
+                                let incoming_value = lower_operand(
+                                    &ctx,
+                                    &phi_incoming_builder,
+                                    &allocas,
+                                    &crate::ir::IROperand::Value(value_id.clone()),
+                                )?;
                                 phi.add_incoming(&[(&incoming_value, incoming_bb)]);
                             }
 
@@ -408,7 +465,10 @@ mod real {
                             )?;
                             builder.build_store(slot, phi_value).map_err(|err| {
                                 CodegenError::BackendFailure {
-                                    message: format!("failed to store phi '{}': {:?}", target.0, err),
+                                    message: format!(
+                                        "failed to store phi '{}': {:?}",
+                                        target.0, err
+                                    ),
                                 }
                             })?;
                         }
@@ -436,7 +496,8 @@ mod real {
                             IRInstructionKind::Assign { target, value, .. } => {
                                 let name = target.0.trim_start_matches('%');
                                 let val = lower_operand(&ctx, &builder, &allocas, value)?;
-                                let ptr = ensure_slot(&builder, name, val.get_type(), &mut allocas)?;
+                                let ptr =
+                                    ensure_slot(&builder, name, val.get_type(), &mut allocas)?;
                                 builder.build_store(ptr, val).map_err(|err| {
                                     CodegenError::BackendFailure {
                                         message: format!("failed to emit store: {:?}", err),
@@ -451,95 +512,225 @@ mod real {
                             } => {
                                 let l = lower_operand(&ctx, &builder, &allocas, left)?;
                                 let r = lower_operand(&ctx, &builder, &allocas, right)?;
+                                let use_float_ops =
+                                    matches!(l.get_type(), BasicTypeEnum::FloatType(_))
+                                        || matches!(r.get_type(), BasicTypeEnum::FloatType(_));
                                 let res = match op {
-                                    crate::ir::IRBinaryOp::Add => builder
-                                        .build_int_add(
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmpadd",
-                                        )
-                                        .map(BasicValueEnum::from),
-                                    crate::ir::IRBinaryOp::Sub => builder
-                                        .build_int_sub(
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmpsub",
-                                        )
-                                        .map(BasicValueEnum::from),
-                                    crate::ir::IRBinaryOp::Mul => builder
-                                        .build_int_mul(
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmpmul",
-                                        )
-                                        .map(BasicValueEnum::from),
-                                    crate::ir::IRBinaryOp::Div => builder
-                                        .build_int_signed_div(
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmpdiv",
-                                        )
-                                        .map(BasicValueEnum::from),
+                                    crate::ir::IRBinaryOp::Add => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_add(
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmpadd",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_add(
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmpadd",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
+                                    crate::ir::IRBinaryOp::Sub => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_sub(
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmpsub",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_sub(
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmpsub",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
+                                    crate::ir::IRBinaryOp::Mul => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_mul(
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmpmul",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_mul(
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmpmul",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
+                                    crate::ir::IRBinaryOp::Div => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_div(
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmpdiv",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_signed_div(
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmpdiv",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
                                     crate::ir::IRBinaryOp::And => builder
                                         .build_and(l.into_int_value(), r.into_int_value(), "tmpand")
                                         .map(BasicValueEnum::from),
                                     crate::ir::IRBinaryOp::Or => builder
                                         .build_or(l.into_int_value(), r.into_int_value(), "tmpor")
                                         .map(BasicValueEnum::from),
-                                    crate::ir::IRBinaryOp::Eq => builder
-                                        .build_int_compare(
-                                            IntPredicate::EQ,
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmpeq",
-                                        )
-                                        .map(BasicValueEnum::from),
-                                    crate::ir::IRBinaryOp::Ne => builder
-                                        .build_int_compare(
-                                            IntPredicate::NE,
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmpne",
-                                        )
-                                        .map(BasicValueEnum::from),
-                                    crate::ir::IRBinaryOp::Lt => builder
-                                        .build_int_compare(
-                                            IntPredicate::SLT,
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmplt",
-                                        )
-                                        .map(BasicValueEnum::from),
-                                    crate::ir::IRBinaryOp::Le => builder
-                                        .build_int_compare(
-                                            IntPredicate::SLE,
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmple",
-                                        )
-                                        .map(|v| v.into()),
-                                    crate::ir::IRBinaryOp::Gt => builder
-                                        .build_int_compare(
-                                            IntPredicate::SGT,
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmpgt",
-                                        )
-                                        .map(|v| v.into()),
-                                    crate::ir::IRBinaryOp::Ge => builder
-                                        .build_int_compare(
-                                            IntPredicate::SGE,
-                                            l.into_int_value(),
-                                            r.into_int_value(),
-                                            "tmpge",
-                                        )
-                                        .map(|v| v.into()),
+                                    crate::ir::IRBinaryOp::Eq => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_compare(
+                                                    FloatPredicate::OEQ,
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmpeq",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_compare(
+                                                    IntPredicate::EQ,
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmpeq",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
+                                    crate::ir::IRBinaryOp::Ne => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_compare(
+                                                    FloatPredicate::ONE,
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmpne",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_compare(
+                                                    IntPredicate::NE,
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmpne",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
+                                    crate::ir::IRBinaryOp::Lt => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_compare(
+                                                    FloatPredicate::OLT,
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmplt",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_compare(
+                                                    IntPredicate::SLT,
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmplt",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
+                                    crate::ir::IRBinaryOp::Le => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_compare(
+                                                    FloatPredicate::OLE,
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmple",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_compare(
+                                                    IntPredicate::SLE,
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmple",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
+                                    crate::ir::IRBinaryOp::Gt => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_compare(
+                                                    FloatPredicate::OGT,
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmpgt",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_compare(
+                                                    IntPredicate::SGT,
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmpgt",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
+                                    crate::ir::IRBinaryOp::Ge => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_compare(
+                                                    FloatPredicate::OGE,
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmpge",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_compare(
+                                                    IntPredicate::SGE,
+                                                    l.into_int_value(),
+                                                    r.into_int_value(),
+                                                    "tmpge",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
                                 };
                                 let res = res.map_err(|err| CodegenError::BackendFailure {
                                     message: format!("failed to emit binary op: {:?}", err),
                                 })?;
                                 let name = target.0.trim_start_matches('%');
-                                let ptr = ensure_slot(&builder, name, res.get_type(), &mut allocas)?;
+                                let ptr =
+                                    ensure_slot(&builder, name, res.get_type(), &mut allocas)?;
                                 builder.build_store(ptr, res).map_err(|err| {
                                     CodegenError::BackendFailure {
                                         message: format!(
@@ -555,6 +746,54 @@ mod real {
                                 arguments,
                                 ..
                             } => {
+                                if callee == "print" {
+                                    let print_fn = match llvm_mod.get_function("print") {
+                                        Some(f) => f,
+                                        None => {
+                                            let sig = ctx.void_type().fn_type(
+                                                &[ctx.f64_type().into()],
+                                                false,
+                                            );
+                                            llvm_mod.add_function("print", sig, None)
+                                        }
+                                    };
+                                    let argsv: Vec<BasicValueEnum> = arguments
+                                        .iter()
+                                        .map(|a| lower_operand(&ctx, &builder, &allocas, a))
+                                        .collect::<Result<_, _>>()?;
+                                    let _ = builder
+                                        .build_call(
+                                            print_fn,
+                                            &basic_metadata_values(&argsv),
+                                            "callprint",
+                                        )
+                                        .map_err(|err| CodegenError::BackendFailure {
+                                            message: format!(
+                                                "failed to emit print call: {:?}",
+                                                err
+                                            ),
+                                        })?;
+                                    if let Some(t) = target {
+                                        if let Some(first_arg) = argsv.first().copied() {
+                                            let name = t.0.trim_start_matches('%');
+                                            let ptr = ensure_slot(
+                                                &builder,
+                                                name,
+                                                first_arg.get_type(),
+                                                &mut allocas,
+                                            )?;
+                                            builder.build_store(ptr, first_arg).map_err(|err| {
+                                                CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to store print result: {:?}",
+                                                        err
+                                                    ),
+                                                }
+                                            })?;
+                                        }
+                                    }
+                                    continue;
+                                }
                                 let callee_fn = match llvm_mod.get_function(callee.as_str()) {
                                     Some(f) => f,
                                     None => {
@@ -651,10 +890,20 @@ mod real {
                                 operand,
                             } => {
                                 let val = lower_operand(&ctx, &builder, &allocas, operand)?;
+                                let use_float_ops =
+                                    matches!(val.get_type(), BasicTypeEnum::FloatType(_));
                                 let res: BasicValueEnum = match op {
-                                    crate::ir::IRUnaryOp::Neg => builder
-                                        .build_int_neg(val.into_int_value(), "tmpneg")
-                                        .map(BasicValueEnum::from),
+                                    crate::ir::IRUnaryOp::Neg => {
+                                        if use_float_ops {
+                                            builder
+                                                .build_float_neg(val.into_float_value(), "tmpneg")
+                                                .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_int_neg(val.into_int_value(), "tmpneg")
+                                                .map(BasicValueEnum::from)
+                                        }
+                                    }
                                     crate::ir::IRUnaryOp::Not => builder
                                         .build_not(val.into_int_value(), "tmpnot")
                                         .map(BasicValueEnum::from),
@@ -663,7 +912,8 @@ mod real {
                                     message: format!("failed to emit unary op: {:?}", err),
                                 })?;
                                 let name = target.0.trim_start_matches('%');
-                                let ptr = ensure_slot(&builder, name, res.get_type(), &mut allocas)?;
+                                let ptr =
+                                    ensure_slot(&builder, name, res.get_type(), &mut allocas)?;
                                 builder.build_store(ptr, res).map_err(|err| {
                                     CodegenError::BackendFailure {
                                         message: format!("failed to store unary result: {:?}", err),

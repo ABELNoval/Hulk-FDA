@@ -52,6 +52,16 @@ impl IRFunction {
         let mut errors = Vec::new();
         let mut defined_values = HashSet::new();
 
+        // Parameters are SSA definitions available from function entry.
+        for parameter in &self.parameters {
+            if !defined_values.insert(parameter.id.0.clone()) {
+                errors.push(format!(
+                    "Function '{}' defines SSA value '{}' more than once.",
+                    self.name, parameter.id.0
+                ));
+            }
+        }
+
         if self.blocks.is_empty() {
             errors.push(format!("Function '{}' has no blocks.", self.name));
         }
@@ -98,6 +108,11 @@ impl IRFunction {
             // Additional SSA checks: each use must have a definition and the definition
             // must be reachable to the use's block. Also validate phi incoming blocks.
             let mut def_map: HashMap<String, BasicBlockId> = HashMap::new();
+            if let Some(entry) = self.entry_block() {
+                for parameter in &self.parameters {
+                    def_map.insert(parameter.id.0.clone(), entry.id.clone());
+                }
+            }
             for block in &self.blocks {
                 for instr in &block.instructions {
                     if let Some(target) = instr.defines_value() {

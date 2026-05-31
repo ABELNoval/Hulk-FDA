@@ -22,6 +22,7 @@
 //
 // =============================================================================
 
+use crate::codegen::{CodegenArtifact, CodegenBackend, CodegenContext, CodegenTarget, LlvmInkwellBackend};
 use crate::ir::{IRBuilder, IRModule, run_ssa_renaming};
 use crate::lexer::{Lexer, Token};
 use crate::parser::{Parser, Program};
@@ -34,6 +35,7 @@ pub enum PipelineStage {
     Parse,
     Semantic,
     Ir,
+    Codegen,
 }
 
 impl PipelineStage {
@@ -43,6 +45,7 @@ impl PipelineStage {
             PipelineStage::Parse => "parse",
             PipelineStage::Semantic => "semantic",
             PipelineStage::Ir => "ir",
+            PipelineStage::Codegen => "codegen",
         }
     }
 }
@@ -53,6 +56,7 @@ pub struct PipelineReport {
     pub tokens: Vec<Token>,
     pub program: Option<Program>,
     pub ir: Option<IRModule>,
+    pub codegen: Option<CodegenArtifact>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +82,7 @@ impl CompilationPipeline {
                 tokens,
                 program: None,
                 ir: None,
+                codegen: None,
             });
         }
 
@@ -89,6 +94,7 @@ impl CompilationPipeline {
                 tokens,
                 program: Some(program),
                 ir: None,
+                codegen: None,
             });
         }
 
@@ -100,17 +106,31 @@ impl CompilationPipeline {
                 tokens,
                 program: Some(program),
                 ir: None,
+                codegen: None,
             });
         }
 
         let mut ir = self.ir(&program)?;
         run_ssa_renaming(&mut ir);
 
+        if stage == PipelineStage::Ir {
+            return Ok(PipelineReport {
+                stage,
+                tokens,
+                program: Some(program),
+                ir: Some(ir),
+                codegen: None,
+            });
+        }
+
+        let codegen = self.codegen(&ir)?;
+
         Ok(PipelineReport {
             stage,
             tokens,
             program: Some(program),
             ir: Some(ir),
+            codegen: Some(codegen),
         })
     }
 
@@ -147,6 +167,39 @@ impl CompilationPipeline {
         builder
             .lower_program(program)
             .map_err(|error| CompilationError::internal(error.to_string()))
+    }
+
+    pub fn codegen(&self, ir: &IRModule) -> CompileResult<CodegenArtifact> {
+        let backend = LlvmInkwellBackend::new();
+        let context = CodegenContext::new(self.module_name(), CodegenTarget::LlvmIr);
+
+        backend
+            .emit_module(ir, &context)
+            .map_err(|error| CompilationError::internal(error.to_string()))
+    }
+
+    pub fn module_name(&self) -> String {
+        let raw = self.file_name.trim();
+
+        if raw == "<inline>" {
+            return "inline".to_string();
+        }
+
+        let candidate = std::path::Path::new(raw)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("lowered");
+
+        let sanitized: String = candidate
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' { ch } else { '_' })
+            .collect();
+
+        if sanitized.is_empty() {
+            "lowered".to_string()
+        } else {
+            sanitized
+        }
     }
 }
 

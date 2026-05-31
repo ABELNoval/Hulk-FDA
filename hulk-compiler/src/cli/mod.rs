@@ -33,6 +33,7 @@ pub enum CompilationMode {
     Parse,
     Semantic,
     Ir,
+    Codegen,
 }
 
 impl CompilationMode {
@@ -42,6 +43,7 @@ impl CompilationMode {
             CompilationMode::Parse => PipelineStage::Parse,
             CompilationMode::Semantic => PipelineStage::Semantic,
             CompilationMode::Ir => PipelineStage::Ir,
+            CompilationMode::Codegen => PipelineStage::Codegen,
         }
     }
 
@@ -51,6 +53,7 @@ impl CompilationMode {
             CompilationMode::Parse => "parse",
             CompilationMode::Semantic => "semantic",
             CompilationMode::Ir => "ir",
+            CompilationMode::Codegen => "codegen",
         }
     }
 }
@@ -65,6 +68,7 @@ pub enum InputSource {
 pub struct CliConfig {
     pub input: InputSource,
     pub mode: CompilationMode,
+    pub output: Option<PathBuf>,
 }
 
 impl CliConfig {
@@ -89,7 +93,7 @@ pub enum CliCommand {
 }
 
 pub fn usage() -> &'static str {
-    "Hulk Compiler\n\nUso:\n  hulk-compiler [--lex|--parse|--semantic|--ir] <archivo>\n  hulk-compiler --source \"codigo fuente\" [--lex|--parse|--semantic|--ir]\n\nOpciones:\n  --lex         Ejecuta solo lexer\n  --parse       Ejecuta lexer + parser\n  --semantic    Ejecuta lexer + parser + semantica\n  --ir          Ejecuta lexer + parser + semantica + IR\n  --source      Usa codigo inline en lugar de archivo\n  -h, --help    Muestra esta ayuda"
+    "Hulk Compiler\n\nUso:\n  hulk-compiler [--lex|--parse|--semantic|--ir|--codegen] [--output <archivo>] <archivo>\n  hulk-compiler --source \"codigo fuente\" [--lex|--parse|--semantic|--ir|--codegen] [--output <archivo>]\n\nOpciones:\n  --lex         Ejecuta solo lexer\n  --parse       Ejecuta lexer + parser\n  --semantic    Ejecuta lexer + parser + semantica\n  --ir          Ejecuta lexer + parser + semantica + IR\n  --codegen     Ejecuta lexer + parser + semantica + IR + codegen LLVM\n  --output, -o  Archivo de salida para --codegen\n  --source      Usa codigo inline en lugar de archivo\n  -h, --help    Muestra esta ayuda"
 }
 
 impl CliCommand {
@@ -103,6 +107,7 @@ impl CliCommand {
     {
         let mut mode = CompilationMode::Semantic;
         let mut input: Option<InputSource> = None;
+        let mut output: Option<PathBuf> = None;
 
         let mut iterator = args.into_iter();
 
@@ -113,6 +118,13 @@ impl CliCommand {
                 "--parse" => mode = CompilationMode::Parse,
                 "--semantic" => mode = CompilationMode::Semantic,
                 "--ir" => mode = CompilationMode::Ir,
+                "--codegen" => mode = CompilationMode::Codegen,
+                "-o" | "--output" => {
+                    let path = iterator.next().ok_or_else(|| {
+                        CompilationError::internal("falta la ruta después de --output")
+                    })?;
+                    output = Some(PathBuf::from(path));
+                }
                 "--source" => {
                     let source = iterator.next().ok_or_else(|| {
                         CompilationError::internal("falta el texto después de --source")
@@ -134,7 +146,11 @@ impl CliCommand {
         let input = input
             .ok_or_else(|| CompilationError::internal("debes pasar un archivo o usar --source"))?;
 
-        Ok(CliCommand::Run(CliConfig { input, mode }))
+        Ok(CliCommand::Run(CliConfig {
+            input,
+            mode,
+            output,
+        }))
     }
 }
 

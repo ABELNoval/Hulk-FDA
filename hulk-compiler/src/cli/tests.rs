@@ -64,4 +64,26 @@ mod tests_cli {
             CliCommand::Help => panic!("se esperaba una corrida, no ayuda"),
         }
     }
+
+    #[test]
+    fn parses_codegen_mode_and_output() {
+        let command = CliCommand::parse_args(vec![
+            "--codegen".to_string(),
+            "-o".to_string(),
+            "out.ll".to_string(),
+            "programa.hulk".to_string(),
+        ])
+        .unwrap();
+
+        match command {
+            CliCommand::Run(config) => {
+                assert_eq!(config.mode, CompilationMode::Codegen);
+                assert_eq!(
+                    config.output.as_deref(),
+                    Some(std::path::Path::new("out.ll"))
+                );
+            }
+            CliCommand::Help => panic!("se esperaba una corrida, no ayuda"),
+        }
+    }
 }

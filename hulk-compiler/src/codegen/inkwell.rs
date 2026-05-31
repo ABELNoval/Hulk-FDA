@@ -2,7 +2,7 @@ use crate::ir::IRModule;
 
 use super::artifact::CodegenArtifact;
 use super::backend::CodegenBackend;
-use super::context::{CodegenContext, CodegenTarget};
+use super::context::CodegenContext;
 use super::error::{CodegenError, CodegenResult};
 
 // Two implementations:

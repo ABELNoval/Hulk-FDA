@@ -54,5 +54,17 @@ mod tests_pipeline {
         assert!(report.ir.is_some());
         let ir = report.ir.expect("IR must be available at IR stage");
         assert!(!ir.functions.is_empty());
+        assert!(report.codegen.is_none());
+    }
+
+    #[cfg(not(feature = "llvm-verify"))]
+    #[test]
+    fn codegen_stage_reports_backend_error_without_feature() {
+        let pipeline = CompilationPipeline::new("1 + 2", "<test>");
+        let result = pipeline.run_to(PipelineStage::Codegen);
+
+        assert!(result.is_err());
+        let error = result.err().unwrap();
+        assert!(error.to_string().contains("llvm-verify"));
     }
 }

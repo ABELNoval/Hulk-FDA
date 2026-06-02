@@ -34,6 +34,7 @@ pub enum CompilationMode {
     Semantic,
     Ir,
     Codegen,
+    Run,
 }
 
 impl CompilationMode {
@@ -44,6 +45,7 @@ impl CompilationMode {
             CompilationMode::Semantic => PipelineStage::Semantic,
             CompilationMode::Ir => PipelineStage::Ir,
             CompilationMode::Codegen => PipelineStage::Codegen,
+            CompilationMode::Run => PipelineStage::Codegen,
         }
     }
 
@@ -54,6 +56,7 @@ impl CompilationMode {
             CompilationMode::Semantic => "semantic",
             CompilationMode::Ir => "ir",
             CompilationMode::Codegen => "codegen",
+            CompilationMode::Run => "run",
         }
     }
 }
@@ -93,7 +96,7 @@ pub enum CliCommand {
 }
 
 pub fn usage() -> &'static str {
-    "Hulk Compiler\n\nUso:\n  hulk-compiler [--lex|--parse|--semantic|--ir|--codegen] [--output <archivo>] <archivo>\n  hulk-compiler --source \"codigo fuente\" [--lex|--parse|--semantic|--ir|--codegen] [--output <archivo>]\n\nOpciones:\n  --lex         Ejecuta solo lexer\n  --parse       Ejecuta lexer + parser\n  --semantic    Ejecuta lexer + parser + semantica\n  --ir          Ejecuta lexer + parser + semantica + IR\n  --codegen     Ejecuta lexer + parser + semantica + IR + codegen LLVM\n  --output, -o  Archivo de salida para --codegen\n  --source      Usa codigo inline en lugar de archivo\n  -h, --help    Muestra esta ayuda"
+    "Hulk Compiler\n\nUso:\n  hulk-compiler [--lex|--parse|--semantic|--ir|--codegen|--run] [--output <archivo>] <archivo>\n  hulk-compiler --source \"codigo fuente\" [--lex|--parse|--semantic|--ir|--codegen|--run] [--output <archivo>]\n\nOpciones:\n  --lex         Ejecuta solo lexer\n  --parse       Ejecuta lexer + parser\n  --semantic    Ejecuta lexer + parser + semantica\n  --ir          Ejecuta lexer + parser + semantica + IR\n  --codegen     Ejecuta lexer + parser + semantica + IR + codegen LLVM\n  --run         Ejecuta lexer + parser + semantica + IR + codegen LLVM + ensamblado + link + ejecucion\n  --output, -o  Archivo de salida para --codegen; para --run es la ruta del ejecutable final\n  --source      Usa codigo inline en lugar de archivo\n  -h, --help    Muestra esta ayuda"
 }
 
 impl CliCommand {
@@ -119,6 +122,7 @@ impl CliCommand {
                 "--semantic" => mode = CompilationMode::Semantic,
                 "--ir" => mode = CompilationMode::Ir,
                 "--codegen" => mode = CompilationMode::Codegen,
+                "--run" => mode = CompilationMode::Run,
                 "-o" | "--output" => {
                     let path = iterator.next().ok_or_else(|| {
                         CompilationError::internal("falta la ruta después de --output")

@@ -86,4 +86,26 @@ mod tests_cli {
             CliCommand::Help => panic!("se esperaba una corrida, no ayuda"),
         }
     }
+
+    #[test]
+    fn parses_run_mode_and_output() {
+        let command = CliCommand::parse_args(vec![
+            "--run".to_string(),
+            "-o".to_string(),
+            "out/hulk_example".to_string(),
+            "programa.hulk".to_string(),
+        ])
+        .unwrap();
+
+        match command {
+            CliCommand::Run(config) => {
+                assert_eq!(config.mode, CompilationMode::Run);
+                assert_eq!(
+                    config.output.as_deref(),
+                    Some(std::path::Path::new("out/hulk_example"))
+                );
+            }
+            CliCommand::Help => panic!("se esperaba una corrida, no ayuda"),
+        }
+    }
 }

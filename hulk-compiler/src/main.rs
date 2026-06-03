@@ -7,8 +7,8 @@ use hulk_compiler::utils::errors::CompilationError;
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("{}", error);
-        process::exit(1);
+        eprintln!("{}", error.render_interface());
+        process::exit(error.exit_code());
     }
 }
 

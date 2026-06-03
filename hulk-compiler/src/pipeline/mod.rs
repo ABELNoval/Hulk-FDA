@@ -139,7 +139,7 @@ impl CompilationPipeline {
         let (tokens, errors) = lexer.tokenize_with_errors();
 
         if let Some(diagnostic) = errors.into_iter().next() {
-            return Err(CompilationError::from(diagnostic.error));
+            return Err(CompilationError::lexer(diagnostic.error, diagnostic.span));
         }
 
         Ok(tokens)
@@ -150,7 +150,7 @@ impl CompilationPipeline {
         let (program, errors) = parser.parse_program_with_errors();
 
         if let Some(diagnostic) = errors.into_iter().next() {
-            return Err(CompilationError::from(diagnostic.error));
+            return Err(CompilationError::parser(diagnostic.error, diagnostic.span));
         }
 
         Ok(program)
@@ -158,7 +158,7 @@ impl CompilationPipeline {
 
     pub fn semantic(&self, program: &Program) -> CompileResult<()> {
         let mut analyzer = SemanticAnalyzer::new();
-        analyzer.analyze(program).map_err(CompilationError::from)?;
+        analyzer.analyze(program).map_err(CompilationError::semantic)?;
         Ok(())
     }
 

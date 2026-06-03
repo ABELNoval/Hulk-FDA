@@ -108,7 +108,7 @@ impl CliCommand {
     where
         I: IntoIterator<Item = String>,
     {
-        let mut mode = CompilationMode::Semantic;
+        let mut mode = CompilationMode::Run;
         let mut input: Option<InputSource> = None;
         let mut output: Option<PathBuf> = None;
 

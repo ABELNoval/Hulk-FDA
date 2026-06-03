@@ -16,7 +16,7 @@ pub fn default_run_paths(config: &CliConfig) -> NativeRunPaths {
         config
             .output
             .clone()
-            .unwrap_or_else(|| PathBuf::from("a.out")),
+            .unwrap_or_else(|| PathBuf::from("output")),
     );
 
     let llvm_ir = executable.with_extension("ll");

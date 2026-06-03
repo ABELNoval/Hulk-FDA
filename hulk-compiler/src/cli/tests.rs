@@ -44,7 +44,7 @@ mod tests_cli {
 
         match command {
             CliCommand::Run(config) => {
-                assert_eq!(config.mode, CompilationMode::Semantic);
+                assert_eq!(config.mode, CompilationMode::Run);
                 assert!(matches!(config.input, InputSource::Inline(_)));
             }
             CliCommand::Help => panic!("se esperaba una corrida, no ayuda"),

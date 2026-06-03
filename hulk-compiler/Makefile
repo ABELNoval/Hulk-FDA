@@ -1,7 +1,7 @@
 .PHONY: build clean
 
 build:
-	cargo build --release
+	cargo build --release --features llvm-verify
 	cp target/release/hulk-compiler ./hulk
 
 clean:

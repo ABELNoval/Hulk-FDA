@@ -1,4 +1,5 @@
 use super::DisplayError;
+use super::span::Span;
 
 /// Enum con todos los tipos de errores que puede producir el análisis semántico
 #[derive(Debug, Clone, PartialEq)]
@@ -6,7 +7,7 @@ pub enum SemanticError {
     // ==================== ERRORES DE VARIABLES ====================
     /// Variable usada pero nunca declarada
     /// Ejemplo: print(x);  // x no existe
-    UndeclaredVariable { name: String },
+    UndeclaredVariable { name: String, span: Span },
 
     /// Variable declarada múltiples veces en el mismo scope
     /// Ejemplo: let x = 5; let x = 10;
@@ -34,6 +35,7 @@ pub enum SemanticError {
         expected: String,
         found: String,
         context: String, // "asignación", "retorno", "argumento", etc.
+        span: Span,
     },
 
     /// Operador no soportado para esos tipos
@@ -304,7 +306,7 @@ impl DisplayError for SemanticError {
     fn message(&self) -> String {
         match self {
             // Variables
-            SemanticError::UndeclaredVariable { name } => {
+            SemanticError::UndeclaredVariable { name, .. } => {
                 format!("variable '{}' no declarada", name)
             }
             SemanticError::VariableAlreadyDeclared {
@@ -331,6 +333,7 @@ impl DisplayError for SemanticError {
                 expected,
                 found,
                 context,
+                ..
             } => {
                 format!(
                     "tipos incompatibles en {}: se esperaba '{}', se encontró '{}'",
@@ -591,7 +594,7 @@ impl DisplayError for SemanticError {
     /// Retorna una sugerencia de cómo arreglar el error (si aplica)
     fn help(&self) -> Option<String> {
         match self {
-            SemanticError::UndeclaredVariable { name } => {
+            SemanticError::UndeclaredVariable { name, .. } => {
                 Some(format!("declara la variable con: let {} = valor;", name))
             }
             SemanticError::VariableAlreadyDeclared { .. } => {
@@ -634,6 +637,34 @@ impl DisplayError for SemanticError {
             SemanticError::SelfOutsideMethod => {
                 Some("self solo es válido dentro de métodos de una clase".to_string())
             }
+            _ => None,
+        }
+    }
+}
+
+impl SemanticError {
+    /// Retorna una ubicación best-effort para errores semánticos con posición explícita.
+    pub fn location(&self) -> Option<(usize, usize)> {
+        match self {
+            SemanticError::UndeclaredVariable { span, .. } => {
+                Some((span.start_line, span.start_column))
+            }
+            SemanticError::TypeMismatch { span, .. } => Some((span.start_line, span.start_column)),
+            SemanticError::VariableAlreadyDeclared {
+                first_line,
+                first_column,
+                ..
+            }
+            | SemanticError::FunctionAlreadyDeclared {
+                first_line,
+                first_column,
+                ..
+            }
+            | SemanticError::TypeAlreadyDeclared {
+                first_line,
+                first_column,
+                ..
+            } => Some((*first_line, *first_column)),
             _ => None,
         }
     }

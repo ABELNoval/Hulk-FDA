@@ -432,6 +432,7 @@ impl ExpressionChecker {
                 expected: expected.to_string(),
                 found: found.to_string(),
                 context: "asignación en let".to_string(),
+                span: _span.clone(),
             });
         }
 
@@ -468,6 +469,7 @@ impl ExpressionChecker {
                 expected: target_type.type_.to_string(),
                 found: value_type.to_string(),
                 context: "asignación".to_string(),
+                span: _span.clone(),
             });
         }
 

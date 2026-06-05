@@ -200,6 +200,7 @@ impl SymbolTable {
                 // Si empieza con minúscula, probablemente sea una variable/función
                 SemanticError::UndeclaredVariable {
                     name: name.to_string(),
+                    span: Span::default(),
                 }
             }
         })

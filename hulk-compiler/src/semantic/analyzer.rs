@@ -355,7 +355,10 @@ impl SemanticAnalyzer {
                     _ => Ok(NormalizedType::Unknown),
                 },
                 None => {
-                    self.report_error(SemanticError::UndeclaredVariable { name: name.clone() });
+                    self.report_error(SemanticError::UndeclaredVariable {
+                        name: name.clone(),
+                        span: expr.span.clone(),
+                    });
                     Ok(NormalizedType::Unknown)
                 }
             },
@@ -600,6 +603,7 @@ impl SemanticAnalyzer {
                                 expected: target_t.to_string(),
                                 found: expr_t.to_string(),
                                 context: "cast".to_string(),
+                                span: expr.span.clone(),
                             });
                             Ok(target_t)
                         }

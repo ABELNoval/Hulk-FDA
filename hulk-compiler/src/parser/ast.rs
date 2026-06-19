@@ -33,7 +33,6 @@ impl Declaration {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeclarationKind {
     Function(FunctionDeclaration),
-    Variable(VariableDeclaration),
     Type(TypeDeclaration),
     Protocol(ProtocolDeclaration),
 }
@@ -192,10 +191,6 @@ impl Expr {
         )
     }
 
-    pub fn grouping(expression: Expr, span: Span) -> Self {
-        Self::new(ExprKind::Grouping(Box::new(expression)), span)
-    }
-
     pub fn call(callee: Expr, arguments: Vec<Expr>, span: Span) -> Self {
         Self::new(
             ExprKind::Call {
@@ -262,29 +257,19 @@ impl Expr {
     pub fn let_expr(
         name: String,
         annotation: Option<TypeReference>,
-        value: Option<Expr>,
+        value: Expr,
+        body: Expr,
         span: Span,
     ) -> Self {
         Self::new(
             ExprKind::Let {
                 name,
                 annotation,
-                value: value.map(Box::new),
+                value: Box::new(value),
+                body: Box::new(body),
             },
             span,
         )
-    }
-
-    pub fn return_expr(value: Option<Expr>, span: Span) -> Self {
-        Self::new(ExprKind::Return(value.map(Box::new)), span)
-    }
-
-    pub fn break_expr(span: Span) -> Self {
-        Self::new(ExprKind::Break, span)
-    }
-
-    pub fn continue_expr(span: Span) -> Self {
-        Self::new(ExprKind::Continue, span)
     }
 
     pub fn member_access(object: Expr, member: String, span: Span) -> Self {
@@ -341,8 +326,8 @@ impl Expr {
         Self::new(ExprKind::Self_, span)
     }
 
-    pub fn base_expr(member: Option<String>, span: Span) -> Self {
-        Self::new(ExprKind::Base { member }, span)
+    pub fn base_expr(span: Span) -> Self {
+        Self::new(ExprKind::Base, span)
     }
 
     pub fn vector_literal(elements: Vec<Expr>, span: Span) -> Self {
@@ -384,7 +369,6 @@ pub enum ExprKind {
     },
 
     // Agrupamiento
-    Grouping(Box<Expr>),
     Block(Vec<Expr>),
 
     // Funciones
@@ -418,13 +402,9 @@ pub enum ExprKind {
     Let {
         name: String,
         annotation: Option<TypeReference>,
-        value: Option<Box<Expr>>,
+        value: Box<Expr>,
+        body: Box<Expr>,
     },
-
-    // Saltos
-    Return(Option<Box<Expr>>),
-    Break,
-    Continue,
 
     // Acceso a miembros
     MemberAccess {
@@ -452,10 +432,7 @@ pub enum ExprKind {
         arguments: Vec<Expr>,
     },
     Self_,
-    Base {
-        member: Option<String>,
-    },
-
+    Base,
     // Vectores
     VectorLiteral(Vec<Expr>),
     VectorComprehension {

@@ -47,8 +47,6 @@ pub use ast::{Declaration, Expr, Literal, Program, TypeReference};
 #[derive(Debug, Clone)]
 pub struct Parser {
     cursor: TokenCursor,
-    loop_depth: usize,
-    function_depth: usize,
     errors: Vec<ParserDiagnostic>,
 }
 
@@ -62,8 +60,6 @@ impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
         Self {
             cursor: TokenCursor::new(tokens),
-            loop_depth: 0,
-            function_depth: 0,
             errors: Vec::new(),
         }
     }
@@ -117,8 +113,7 @@ impl Parser {
 
             entry_expression = Some(self.parse_expression());
             if let Some(expr) = &entry_expression {
-                program_span = if declarations.is_empty() && program_span == self.cursor.peek().span
-                {
+                program_span = if declarations.is_empty() {
                     expr.span.clone()
                 } else {
                     program_span.merge(&expr.span)
@@ -137,13 +132,7 @@ impl Parser {
     }
 
     pub fn parse_expression(&mut self) -> Expr {
-        if self.cursor.check(&TokenType::Return) {
-            self.parse_return_expr()
-        } else if self.cursor.check(&TokenType::Break) {
-            self.parse_break_expr()
-        } else if self.cursor.check(&TokenType::Continue) {
-            self.parse_continue_expr()
-        } else if self.cursor.check(&TokenType::Let) {
+        if self.cursor.check(&TokenType::Let) {
             self.parse_let_binding()
         } else if self.cursor.check(&TokenType::If) {
             self.parse_if_expr()
@@ -174,11 +163,14 @@ impl Parser {
             self.cursor.match_token(&TokenType::Semicolon);
         }
 
-        if self.expect(TokenType::RightBrace).is_err() {
-            self.synchronize();
-        }
+        let end_span = match self.expect(TokenType::RightBrace) {
+            Ok(token) => token.span,
+            Err(_) => {
+                self.synchronize();
+                self.cursor.peek().span.clone()
+            }
+        };
 
-        let end_span = self.cursor.peek().span.clone();
         let span = start_span.merge(&end_span);
         Expr::block(expressions, span)
     }
@@ -191,74 +183,40 @@ impl Parser {
         }
 
         let start_span = start_token.unwrap().span;
-        let mut let_exprs = Vec::new();
+        let mut bindings = Vec::new();
 
         if let Some(expr) = self.parse_single_let_binding() {
-            let_exprs.push(expr);
+            bindings.push(expr);
         }
 
-        while self.cursor.match_token(&TokenType::Semicolon) {
+        while self.cursor.match_token(&TokenType::Comma) {
             if let Some(expr) = self.parse_single_let_binding() {
-                let_exprs.push(expr);
+                bindings.push(expr);
             } else {
                 break;
             }
         }
 
-        let end_span = self.cursor.peek().span.clone();
+        if self.expect(TokenType::In).is_err() {
+            self.synchronize();
 
-        if let Some(expr) = let_exprs.first().cloned()
-            && let_exprs.len() == 1
-        {
+            return Expr::literal(Literal::Number(0.0), start_span);
+        }
+
+        let body = self.parse_expression();
+
+        let mut expr = body;
+
+        for (name, annotation, value) in bindings.into_iter().rev() {
             let span = start_span.merge(&expr.span);
-            return Expr::new(expr.kind, span);
+
+            expr = Expr::let_expr(name, annotation, value, expr, span);
         }
 
-        if !let_exprs.is_empty() {
-            let span = start_span.merge(&end_span);
-            return Expr::block(let_exprs, span);
-        }
-
-        Expr::literal(Literal::Number(0.0), start_span.merge(&end_span))
+        expr
     }
 
-    fn parse_return_expr(&mut self) -> Expr {
-        let return_token = self.cursor.advance();
-
-        if self.function_depth == 0 {
-            self.error(ParserError::ReturnOutsideFunction);
-        }
-
-        if self.is_expression_terminator() {
-            return Expr::return_expr(None, return_token.span);
-        }
-
-        let value = self.parse_expression();
-        let span = return_token.span.merge(&value.span);
-        Expr::return_expr(Some(value), span)
-    }
-
-    fn parse_break_expr(&mut self) -> Expr {
-        let break_token = self.cursor.advance();
-
-        if self.loop_depth == 0 {
-            self.error(ParserError::BreakOutsideLoop);
-        }
-
-        Expr::break_expr(break_token.span)
-    }
-
-    fn parse_continue_expr(&mut self) -> Expr {
-        let continue_token = self.cursor.advance();
-
-        if self.loop_depth == 0 {
-            self.error(ParserError::ContinueOutsideLoop);
-        }
-
-        Expr::continue_expr(continue_token.span)
-    }
-
-    fn parse_single_let_binding(&mut self) -> Option<Expr> {
+    fn parse_single_let_binding(&mut self) -> Option<(String, Option<TypeReference>, Expr)> {
         let name_token = self.cursor.peek().clone();
 
         if !matches!(name_token.token_type, TokenType::Identifier(_)) {
@@ -289,7 +247,7 @@ impl Parser {
         let end_span = value.span.clone();
         let span = start_span.merge(&end_span);
 
-        Some(Expr::let_expr(name, annotation, Some(value), span))
+        Some((name, annotation, value))
     }
 
     fn parse_if_expr(&mut self) -> Expr {
@@ -315,17 +273,13 @@ impl Parser {
         let then_expr = self.parse_expression();
         let (elif_parts, else_expr) = self.parse_elif_parts();
 
-        let end_span = else_expr
-            .as_ref()
-            .map(|e| e.span.clone())
-            .or_else(|| elif_parts.last().map(|(_, e)| e.span.clone()))
-            .unwrap_or_else(|| then_expr.span.clone());
+        let end_span = else_expr.span.clone();
 
         let span = start_span.merge(&end_span);
-        Expr::if_expr(condition, then_expr, elif_parts, else_expr, span)
+        Expr::if_expr(condition, then_expr, elif_parts, Some(else_expr), span)
     }
 
-    fn parse_elif_parts(&mut self) -> (Vec<(Expr, Expr)>, Option<Expr>) {
+    fn parse_elif_parts(&mut self) -> (Vec<(Expr, Expr)>, Expr) {
         let mut elif_parts = Vec::new();
 
         while self.cursor.match_token(&TokenType::Elif) {
@@ -344,11 +298,16 @@ impl Parser {
             elif_parts.push((condition, elif_expr));
         }
 
-        let else_expr = if self.cursor.match_token(&TokenType::Else) {
-            Some(self.parse_expression())
-        } else {
-            None
-        };
+        if self.expect(TokenType::Else).is_err() {
+            self.synchronize();
+
+            return (
+                elif_parts,
+                Expr::literal(Literal::Number(0.0), self.cursor.peek().span.clone()),
+            );
+        }
+
+        let else_expr = self.parse_expression();
 
         (elif_parts, else_expr)
     }
@@ -373,9 +332,7 @@ impl Parser {
             self.synchronize();
         }
 
-        self.loop_depth += 1;
         let body = self.parse_expression();
-        self.loop_depth = self.loop_depth.saturating_sub(1);
         let end_span = body.span.clone();
         let span = start_span.merge(&end_span);
         Expr::while_expr(condition, body, span)
@@ -389,6 +346,12 @@ impl Parser {
         }
 
         let start_span = start_token.unwrap().span;
+
+        if self.expect(TokenType::LeftParen).is_err() {
+            self.synchronize();
+            return Expr::literal(Literal::Number(0.0), start_span);
+        }
+
         let var_token = self.cursor.peek().clone();
 
         if !matches!(var_token.token_type, TokenType::Identifier(_)) {
@@ -412,9 +375,12 @@ impl Parser {
         }
 
         let iterable = self.parse_expression();
-        self.loop_depth += 1;
+
+        if self.expect(TokenType::RightParen).is_err() {
+            self.synchronize();
+        }
+
         let body = self.parse_expression();
-        self.loop_depth = self.loop_depth.saturating_sub(1);
         let end_span = body.span.clone();
         let span = start_span.merge(&end_span);
         Expr::for_expr(variable, iterable, body, span)
@@ -634,7 +600,7 @@ impl Parser {
                     let span = if let Some(last_argument) = arguments.last() {
                         expr.span.merge(&last_argument.span)
                     } else {
-                        expr.span.merge(&expr.span)
+                        expr.span.clone()
                     };
                     expr = Expr::call(expr, arguments, span);
                     break;
@@ -680,6 +646,73 @@ impl Parser {
         expr
     }
 
+    fn parse_vector(&mut self, start_span: Span) -> Expr {
+        let mut elements = Vec::new();
+
+        if self.cursor.match_token(&TokenType::RightBracket) {
+            return Expr::vector_literal(vec![], start_span.clone());
+        }
+
+        let first_expr = self.parse_expression();
+
+        // comprehension
+        if self.cursor.match_token(&TokenType::DoublePipe) {
+            let identifier = self.cursor.peek().clone();
+
+            let binding = match &identifier.token_type {
+                TokenType::Identifier(name) => {
+                    self.cursor.advance();
+
+                    name.clone()
+                }
+
+                _ => {
+                    self.error(ParserError::ExpectedIdentifier {
+                        found: identifier.lexeme,
+                    });
+
+                    return first_expr;
+                }
+            };
+
+            if self.expect(TokenType::In).is_err() {
+                self.synchronize();
+
+                return first_expr;
+            }
+
+            let iterable = self.parse_expression();
+
+            let end_span = match self.expect(TokenType::RightBracket) {
+                Ok(token) => token.span,
+
+                Err(_) => iterable.span.clone(),
+            };
+
+            let span = start_span.merge(&end_span);
+
+            return Expr::vector_comprehension(first_expr, binding, iterable, span);
+        }
+
+        // vector normal
+
+        elements.push(first_expr);
+
+        while self.cursor.match_token(&TokenType::Comma) {
+            elements.push(self.parse_expression());
+        }
+
+        let end_span = match self.expect(TokenType::RightBracket) {
+            Ok(token) => token.span,
+
+            Err(_) => elements.last().unwrap().span.clone(),
+        };
+
+        let span = start_span.merge(&end_span);
+
+        Expr::vector_literal(elements, span)
+    }
+
     fn parse_primary(&mut self) -> Expr {
         if self.cursor.check(&TokenType::LeftParen) {
             let open_token = self.cursor.advance();
@@ -707,7 +740,7 @@ impl Parser {
             TokenType::E => Expr::literal(Literal::E, span),
             TokenType::Identifier(name) => Expr::identifier(name, span),
             TokenType::SelfKeyword => Expr::self_expr(span),
-            TokenType::Base => Expr::base_expr(None, span),
+            TokenType::Base => Expr::base_expr(span),
             TokenType::New => {
                 let type_reference = self.parse_type_reference();
                 let mut arguments = Vec::new();
@@ -761,6 +794,11 @@ impl Parser {
             TokenType::RightBrace => {
                 self.error(ParserError::UnmatchedClosingDelimiter { delimiter: '}' });
                 Expr::literal(Literal::Number(0.0), span)
+            }
+            TokenType::LeftBracket => {
+                let token = self.cursor.advance();
+
+                return self.parse_vector(token.span);
             }
             _ => {
                 self.error(ParserError::ExpectedExpression {
@@ -889,18 +927,15 @@ impl Parser {
             None
         };
 
-        self.function_depth += 1;
         let body = if self.cursor.match_token(&TokenType::Arrow) {
             self.parse_expression()
         } else if self.cursor.check(&TokenType::LeftBrace) {
             self.parse_block()
         } else {
             self.error(ParserError::ExpectedFunctionBody);
-            self.function_depth = self.function_depth.saturating_sub(1);
             self.synchronize();
             return None;
         };
-        self.function_depth = self.function_depth.saturating_sub(1);
 
         let span = start_span.merge(&body.span);
 
@@ -1152,11 +1187,14 @@ impl Parser {
             self.cursor.match_token(&TokenType::Semicolon);
         }
 
-        if self.expect(TokenType::RightBrace).is_err() {
-            self.synchronize();
-        }
+        let end_span = match self.expect(TokenType::RightBrace) {
+            Ok(token) => token.span,
+            Err(_) => {
+                self.synchronize();
+                self.cursor.peek().span.clone()
+            }
+        };
 
-        let end_span = self.cursor.peek().span.clone();
         let span = start_span.merge(&end_span);
 
         Some(Declaration::new(
@@ -1252,7 +1290,7 @@ impl Parser {
 
             let parameter_span = match &annotation {
                 Some(type_ref) => parameter_token.span.merge(&type_ref.span),
-                None => parameter_token.span,
+                None => parameter_token.span.clone(),
             };
 
             parameters.push(Parameter::new(parameter_name, annotation, parameter_span));

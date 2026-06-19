@@ -95,7 +95,14 @@ impl Lexer {
             '%' => self.simple_token(TokenType::Percent),
 
             '&' => self.simple_token(TokenType::Ampersand),
-            '|' => self.simple_token(TokenType::Pipe),
+            '|' => {
+                if self.peek() == Some('|') {
+                    self.advance();
+                    self.simple_token(TokenType::DoublePipe)
+                } else {
+                    self.simple_token(TokenType::Pipe)
+                }
+            }
 
             // ===================== LOOKAHEAD =====================
             // Operadores que pueden tener más de un carácter
@@ -199,8 +206,8 @@ impl Lexer {
             // Letras → identificador o keyword
             'a'..='z' | 'A'..='Z' => self.read_identifier(start_line, start_col),
 
-            // Un identificador no puede empezar con '_'
-            '_' => self.read_identifier(start_line, start_col),
+            // // Un identificador no puede empezar con '_'
+            // '_' => self.read_identifier(start_line, start_col),
 
             // ===================== ERROR =====================
             // Cualquier cosa que no reconozco

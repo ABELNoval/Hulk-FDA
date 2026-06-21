@@ -59,6 +59,8 @@ pub enum NormalizedType {
     Iterable(Box<NormalizedType>),
     /// Tipo vector (por ejemplo, Number[])
     Vector(Box<NormalizedType>),
+    /// Tipo para el resultado de la función print
+    PrintResult,
     /// Tipo desconocido (útil para error recovery)
     Unknown,
 }
@@ -89,6 +91,14 @@ impl NormalizedType {
         matches!(self, Self::Number | Self::String | Self::Boolean)
     }
 
+    pub fn is_print_result(&self) -> bool {
+        matches!(self, Self::PrintResult)
+    }
+
+    pub fn is_value_type(&self) -> bool {
+        !matches!(self, Self::Unknown | Self::PrintResult)
+    }
+
     pub fn is_unknown(&self) -> bool {
         matches!(self, Self::Unknown)
     }
@@ -103,6 +113,7 @@ impl std::fmt::Display for NormalizedType {
             NormalizedType::Named(name) => write!(f, "{}", name),
             NormalizedType::Iterable(inner) => write!(f, "{}*", inner),
             NormalizedType::Vector(inner) => write!(f, "{}[]", inner),
+            NormalizedType::PrintResult => write!(f, "PrintResult"),
             NormalizedType::Unknown => write!(f, "?"),
         }
     }
@@ -123,6 +134,71 @@ impl TypeEnvironment {
             user_types: HashMap::new(),
             protocols: HashMap::new(),
         }
+    }
+
+    pub fn common_supertype(
+        &self,
+        left: &NormalizedType,
+        right: &NormalizedType,
+    ) -> Option<NormalizedType> {
+        // Son iguales
+        if left == right {
+            return Some(left.clone());
+        }
+
+        // Unknown propaga
+        if *left == NormalizedType::Unknown {
+            return Some(right.clone());
+        }
+
+        if *right == NormalizedType::Unknown {
+            return Some(left.clone());
+        }
+
+        // Solo tiene sentido recorrer herencia en Named
+        let (NormalizedType::Named(left_name), NormalizedType::Named(right_name)) = (left, right)
+        else {
+            return None;
+        };
+
+        // Obtener todos los ancestros del izquierdo
+        let mut ancestors = Vec::new();
+
+        let mut current = Some(left_name.clone());
+
+        while let Some(name) = current {
+            ancestors.push(name.clone());
+
+            current = self.get_parent_type(&name);
+        }
+
+        // Subir desde el derecho hasta encontrar coincidencia
+        let mut current = Some(right_name.clone());
+
+        while let Some(name) = current {
+            if ancestors.contains(&name) {
+                return Some(NormalizedType::Named(name));
+            }
+
+            current = self.get_parent_type(&name);
+        }
+
+        None
+    }
+
+    pub fn can_use_is(&self, left: &NormalizedType, right: &NormalizedType) -> bool {
+        if left == &NormalizedType::Unknown || right == &NormalizedType::Unknown {
+            return true;
+        }
+
+        if self.is_compatible(left, right) || self.is_compatible(right, left) {
+            return true;
+        }
+
+        matches!(
+            (left, right),
+            (NormalizedType::Named(_), NormalizedType::Named(_))
+        )
     }
 
     /// Registra un nuevo tipo en el entorno
@@ -199,7 +275,7 @@ impl TypeEnvironment {
     /// Registra un protocolo en el entorno
     pub fn register_protocol(&mut self, protocol_info: ProtocolInfo) -> Result<(), SemanticError> {
         if self.protocols.contains_key(&protocol_info.name) {
-            return Err(SemanticError::TypeAlreadyDeclared {
+            return Err(SemanticError::ProtocolAlreadyDeclared {
                 name: protocol_info.name.clone(),
                 first_line: 0,
                 first_column: 0,
@@ -232,7 +308,7 @@ impl TypeEnvironment {
 
         for ext in &protocol_info.extends {
             if !self.protocols.contains_key(ext) {
-                return Err(SemanticError::UndeclaredType { name: ext.clone() });
+                return Err(SemanticError::UndeclaredProtocol { name: ext.clone() });
             }
 
             let mut visited = std::collections::HashSet::new();
@@ -253,22 +329,23 @@ impl TypeEnvironment {
         self.user_types.get(name)
     }
 
-    /// Comprueba si un nombre corresponde a un tipo builtin conocido
-    pub fn is_builtin_name(name: &str) -> bool {
-        matches!(name, "Number" | "String" | "Boolean")
-    }
-
     /// Comprueba si el entorno conoce un tipo (builtin o definido por el usuario)
     pub fn has_type(&self, name: &str) -> bool {
-        // Also treat protocols as valid type-like references for annotations
-        Self::is_builtin_name(name)
-            || self.user_types.contains_key(name)
-            || self.protocols.contains_key(name)
+        Self::is_builtin_name(name) || self.user_types.contains_key(name)
+    }
+
+    pub fn has_protocol(&self, name: &str) -> bool {
+        self.protocols.contains_key(name)
     }
 
     /// Busca un protocolo en el entorno
     pub fn get_protocol(&self, name: &str) -> Option<&ProtocolInfo> {
         self.protocols.get(name)
+    }
+
+    /// Comprueba si un nombre corresponde a un tipo builtin conocido
+    pub fn is_builtin_name(name: &str) -> bool {
+        matches!(name, "Number" | "String" | "Boolean")
     }
 
     /// Verifica si dos tipos son iguales
@@ -286,6 +363,7 @@ impl TypeEnvironment {
             (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => self.types_equal(a, b),
             (NormalizedType::Vector(a), NormalizedType::Vector(b)) => self.types_equal(a, b),
             (NormalizedType::Unknown, NormalizedType::Unknown) => true,
+            (NormalizedType::PrintResult, NormalizedType::PrintResult) => true,
             _ => false,
         }
     }
@@ -487,7 +565,7 @@ impl TypeEnvironment {
     ) -> Result<NormalizedType, SemanticError> {
         match &tr.kind {
             TypeReferenceKind::Named(name) => {
-                if !self.has_type(name) {
+                if !(self.has_type(name) || self.has_protocol(name)) {
                     return Err(SemanticError::UndeclaredType { name: name.clone() });
                 }
 
@@ -530,9 +608,15 @@ impl TypeEnvironment {
         Ok(())
     }
 
-    /// Valida una declaración de tipo: su `inherits` y las anotaciones de atributos.
-    /// Actualmente valida que el tipo padre (si existe) esté declarado y que
-    /// las anotaciones de atributos referencien tipos válidos.
+    /// Valida la estructura semántica básica de una declaración de tipo.
+    ///
+    /// Verifica:
+    /// - Que el tipo padre (si existe) esté declarado y no sea builtin.
+    /// - Que la cantidad de `parent_arguments` coincida con los parámetros del padre.
+    /// - Que las anotaciones de los atributos referencien tipos válidos.
+    ///
+    /// No valida los cuerpos de los métodos ni las expresiones internas;
+    /// esas comprobaciones pertenecen al analyzer.
     pub fn validate_type_declaration(
         &self,
         td: &crate::parser::ast::TypeDeclaration,

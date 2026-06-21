@@ -60,6 +60,10 @@ pub enum SemanticError {
     /// Ejemplo: let x: MiTipo = 5;  // MiTipo no existe
     UndeclaredType { name: String },
 
+    /// Protocolo no declarado/no existe
+    /// Ejemplo: let x: MiProtocolo = 5;  // MiProtocolo no existe
+    UndeclaredProtocol { name: String },
+
     /// Tipos incompatibles en operación de comparación
     /// Ejemplo: 5 == "hola"
     IncomparableTypes {
@@ -131,6 +135,13 @@ pub enum SemanticError {
     // ==================== ERRORES DE CLASES/TIPOS DEFINIDOS ====================
     /// Tipo/clase ya declarada
     TypeAlreadyDeclared {
+        name: String,
+        first_line: usize,
+        first_column: usize,
+    },
+
+    /// Protocolo ya declarado
+    ProtocolAlreadyDeclared {
         name: String,
         first_line: usize,
         first_column: usize,
@@ -299,6 +310,12 @@ impl DisplayError for SemanticError {
             SemanticError::NonConstantExpression { .. } => "E2081",
             SemanticError::UnsupportedExpression { .. } => "E2082",
             SemanticError::UnsupportedFeature { .. } => "E2099",
+            SemanticError::UndeclaredProtocol { name } => "E2100",
+            SemanticError::ProtocolAlreadyDeclared {
+                name,
+                first_line,
+                first_column,
+            } => "E2101",
         }
     }
 
@@ -374,7 +391,11 @@ impl DisplayError for SemanticError {
                     left_type, right_type
                 )
             }
-            SemanticError::InvalidOperandType { expected, found, context } => {
+            SemanticError::InvalidOperandType {
+                expected,
+                found,
+                context,
+            } => {
                 format!(
                     "tipo de operando inválido en {}: esperaba '{}', se encontró '{}'",
                     context, expected, found
@@ -587,6 +608,19 @@ impl DisplayError for SemanticError {
             }
             SemanticError::UnsupportedFeature { feature } => {
                 format!("característica no soportada: {}", feature)
+            }
+            SemanticError::UndeclaredProtocol { name } => {
+                format!("protocolo no declarado: {}", name)
+            }
+            SemanticError::ProtocolAlreadyDeclared {
+                name,
+                first_line,
+                first_column,
+            } => {
+                format!(
+                    "protocolo ya declarado: {} en la línea {}, columna {}",
+                    name, first_line, first_column
+                )
             }
         }
     }

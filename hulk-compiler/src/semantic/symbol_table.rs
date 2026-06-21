@@ -13,6 +13,7 @@
 // =============================================================================
 
 use crate::parser::ast::{Parameter, TypeReference};
+use crate::semantic::type_system::NormalizedType;
 use crate::utils::errors::semantic::SemanticError;
 use crate::utils::errors::span::Span;
 use std::collections::HashMap;
@@ -23,20 +24,20 @@ pub enum SymbolInfo {
     /// Declaración de variable con su tipo
     Variable {
         name: String,
-        type_ref: Option<TypeReference>,
+        type_ref: NormalizedType,
         span: Span,
     },
     /// Parámetro de función con su tipo
     Parameter {
         name: String,
-        type_ref: Option<TypeReference>,
+        type_ref: NormalizedType,
         span: Span,
     },
     /// Declaración de función
     Function {
         name: String,
         parameters: Vec<Parameter>,
-        return_type: Option<TypeReference>,
+        return_type: NormalizedType,
         span: Span,
     },
     /// Declaración de tipo (type)
@@ -91,8 +92,6 @@ impl SymbolTable {
     pub fn exit_scope(&mut self) {
         if self.scopes.len() > 1 {
             self.scopes.pop();
-        } else {
-            panic!("Cannot exit global scope");
         }
     }
 
@@ -131,7 +130,7 @@ impl SymbolTable {
                     });
                 }
                 SymbolInfo::Protocol { name, .. } => {
-                    return Err(SemanticError::TypeAlreadyDeclared {
+                    return Err(SemanticError::ProtocolAlreadyDeclared {
                         name: name.clone(),
                         first_line: existing.span().start_line,
                         first_column: existing.span().start_column,
@@ -167,45 +166,6 @@ impl SymbolTable {
             .unwrap_or_default()
     }
 
-    /// Verifica si un símbolo está declarado en algún scope (sin retornarlo)
-    pub fn is_symbol_declared(&self, name: &str) -> bool {
-        self.lookup(name).is_some()
-    }
-
-    /// Verifica si estamos en el scope global
-    pub fn is_global_scope(&self) -> bool {
-        self.scope_depth() == 1
-    }
-
-    /// Retorna el símbolo o un `SemanticError` si no está declarado.
-    pub fn get_symbol(&self, name: &str) -> Result<SymbolInfo, SemanticError> {
-        self.get_symbol_or_error(name)
-    }
-
-    /// Retorna el símbolo o un SemanticError si no está declarado
-    /// Determina automáticamente qué tipo de error basado en convenciones de nombres
-    pub fn get_symbol_or_error(&self, name: &str) -> Result<SymbolInfo, SemanticError> {
-        self.lookup(name).ok_or_else(|| {
-            // Heurística: si empieza con mayúscula, probablemente sea un tipo/protocolo
-            if name
-                .chars()
-                .next()
-                .map(|c| c.is_uppercase())
-                .unwrap_or(false)
-            {
-                SemanticError::UndeclaredType {
-                    name: name.to_string(),
-                }
-            } else {
-                // Si empieza con minúscula, probablemente sea una variable/función
-                SemanticError::UndeclaredVariable {
-                    name: name.to_string(),
-                    span: Span::default(),
-                }
-            }
-        })
-    }
-
     /// Lista todos los símbolos desde el scope actual hacia el global (para debugging)
     pub fn all_symbols_in_chain(&self) -> Vec<(usize, String, SymbolInfo)> {
         let mut result = Vec::new();
@@ -227,174 +187,17 @@ impl SymbolTable {
             .unwrap_or_default()
     }
 
-    // ========== SAFE PUBLIC API FOR OTHER MODULES ==========
-    // Estos métodos forman la interfaz segura para que otros módulos
-    // (expression_checker, analyzer) consulten la tabla de símbolos
-
-    /// Verifica si un símbolo es una función
-    pub fn is_function(&self, name: &str) -> bool {
-        matches!(self.lookup(name), Some(SymbolInfo::Function { .. }))
-    }
-
-    /// Verifica si un símbolo es una variable
-    pub fn is_variable(&self, name: &str) -> bool {
-        matches!(self.lookup(name), Some(SymbolInfo::Variable { .. }))
-    }
-
-    /// Verifica si un símbolo es un parámetro
-    pub fn is_parameter(&self, name: &str) -> bool {
-        matches!(self.lookup(name), Some(SymbolInfo::Parameter { .. }))
-    }
-
-    /// Verifica si un símbolo es un tipo
-    pub fn is_type(&self, name: &str) -> bool {
-        matches!(self.lookup(name), Some(SymbolInfo::Type { .. }))
-    }
-
-    /// Verifica si un símbolo es un protocolo
-    pub fn is_protocol(&self, name: &str) -> bool {
-        matches!(self.lookup(name), Some(SymbolInfo::Protocol { .. }))
-    }
-
-    /// Retorna el nombre del tipo de símbolo ("function", "variable", "type", etc.)
-    pub fn get_symbol_kind(&self, name: &str) -> Option<&'static str> {
-        match self.lookup(name) {
-            Some(SymbolInfo::Function { .. }) => Some("function"),
-            Some(SymbolInfo::Variable { .. }) => Some("variable"),
-            Some(SymbolInfo::Parameter { .. }) => Some("parameter"),
-            Some(SymbolInfo::Type { .. }) => Some("type"),
-            Some(SymbolInfo::Protocol { .. }) => Some("protocol"),
-            None => None,
-        }
-    }
-
-    /// Retorna todas las funciones declaradas en el scope actual
-    pub fn functions_in_scope(&self) -> Vec<SymbolInfo> {
-        self.symbols_in_current_scope()
-            .into_iter()
-            .filter(|s| matches!(s, SymbolInfo::Function { .. }))
-            .collect()
-    }
-
-    /// Retorna todas las variables en el scope actual
-    pub fn variables_in_scope(&self) -> Vec<SymbolInfo> {
-        self.symbols_in_current_scope()
-            .into_iter()
-            .filter(|s| matches!(s, SymbolInfo::Variable { .. }))
-            .collect()
-    }
-
-    /// Retorna todos los parámetros en el scope actual
-    pub fn parameters_in_scope(&self) -> Vec<SymbolInfo> {
-        self.symbols_in_current_scope()
-            .into_iter()
-            .filter(|s| matches!(s, SymbolInfo::Parameter { .. }))
-            .collect()
-    }
-
-    /// Retorna todas las funciones globales (útil para buscar funciones disponibles)
-    pub fn global_functions(&self) -> Vec<SymbolInfo> {
-        self.global_symbols()
-            .into_iter()
-            .filter(|s| matches!(s, SymbolInfo::Function { .. }))
-            .collect()
-    }
-
-    /// Retorna todos los tipos globales
-    pub fn global_types(&self) -> Vec<SymbolInfo> {
-        self.global_symbols()
-            .into_iter()
-            .filter(|s| matches!(s, SymbolInfo::Type { .. }))
-            .collect()
-    }
-
-    /// Retorna todos los protocolos globales
-    pub fn global_protocols(&self) -> Vec<SymbolInfo> {
-        self.global_symbols()
-            .into_iter()
-            .filter(|s| matches!(s, SymbolInfo::Protocol { .. }))
-            .collect()
-    }
-
-    /// Cuenta cuántos símbolos hay en el scope actual
-    pub fn symbol_count_in_scope(&self) -> usize {
-        self.symbols_in_current_scope().len()
-    }
-
-    /// Cuenta cuántos símbolos hay en total (todos los scopes)
-    pub fn total_symbol_count(&self) -> usize {
-        self.all_symbols_in_chain().len()
-    }
-
-    /// Cuenta cuántos símbolos hay en global scope
-    pub fn global_symbol_count(&self) -> usize {
-        self.global_symbols().len()
-    }
-
-    /// Resuelve un símbolo de forma segura, retornando información completa
-    /// Útil para el analyzer cuando quiere saber todo sobre un símbolo
-    pub fn resolve_symbol_info(&self, name: &str) -> Option<(SymbolInfo, usize, &'static str)> {
-        self.lookup(name).map(|sym| {
-            let kind = match &sym {
-                SymbolInfo::Function { .. } => "function",
-                SymbolInfo::Variable { .. } => "variable",
-                SymbolInfo::Parameter { .. } => "parameter",
-                SymbolInfo::Type { .. } => "type",
-                SymbolInfo::Protocol { .. } => "protocol",
-            };
-
-            // Encontrar en qué scope está
-            for (scope_idx, scope) in self.scopes.iter().enumerate().rev() {
-                if scope.contains_key(name) {
-                    return (sym, scope_idx, kind);
-                }
-            }
-
-            (sym, 0, kind) // Si no lo encuentra (no debería pasar), retorna scope 0
-        })
-    }
-
-    /// Verifica si un símbolo está disponible (existe y es accesible)
-    /// Retorna (existe, es_local, es_global)
-    pub fn symbol_availability(&self, name: &str) -> (bool, bool, bool) {
-        let exists = self.is_symbol_declared(name);
-        let is_local = self.lookup_local(name).is_some();
-        let is_global = self.scopes.first().is_some_and(|g| g.contains_key(name));
-
-        (exists, is_local, is_global)
-    }
-
-    /// Obtiene la información de tipo de un símbolo (si la tiene)
-    pub fn get_type_reference(&self, name: &str) -> Option<TypeReference> {
-        self.lookup(name).and_then(|sym| match sym {
-            SymbolInfo::Variable { type_ref, .. } => type_ref,
-            SymbolInfo::Parameter { type_ref, .. } => type_ref,
-            SymbolInfo::Function { return_type, .. } => return_type,
-            _ => None,
-        })
-    }
-
-    /// Verifica si el símbolo existe en el scope global específicamente
-    pub fn exists_in_global(&self, name: &str) -> bool {
-        self.scopes.first().is_some_and(|g| g.contains_key(name))
-    }
-
-    /// Verifica si el símbolo existe SOLO en scopes locales (no en global)
-    pub fn exists_only_locally(&self, name: &str) -> bool {
-        self.is_symbol_declared(name) && !self.exists_in_global(name)
-    }
-
     /// Declara los símbolos builtin globales (print, sqrt, sin, cos, log, exp, rand)
     pub fn declare_builtins(&mut self) {
         // Builtin functions
         let span = Span::default();
 
-        // print(value: ?) -> Unknown (handled specially in checker)
+        // print(value: ?) -> PrintResult (handled specially in checker)
         let print_param = Parameter::new("value".into(), None, span.clone());
         let print_fn = SymbolInfo::Function {
             name: "print".into(),
             parameters: vec![print_param],
-            return_type: None,
+            return_type: NormalizedType::PrintResult,
             span: span.clone(),
         };
         self.scopes
@@ -412,7 +215,7 @@ impl SymbolTable {
             let f = SymbolInfo::Function {
                 name: name.into(),
                 parameters: vec![num_param.clone()],
-                return_type: Some(TypeReference::new("Number".into(), span.clone())),
+                return_type: NormalizedType::Number,
                 span: span.clone(),
             };
             self.scopes
@@ -436,7 +239,7 @@ impl SymbolTable {
                     span.clone(),
                 ),
             ],
-            return_type: Some(TypeReference::new("Number".into(), span.clone())),
+            return_type: NormalizedType::Number,
             span: span.clone(),
         };
         self.scopes
@@ -448,33 +251,13 @@ impl SymbolTable {
         let rand_f = SymbolInfo::Function {
             name: "rand".into(),
             parameters: vec![],
-            return_type: Some(TypeReference::new("Number".into(), span.clone())),
+            return_type: NormalizedType::Number,
             span: span.clone(),
         };
         self.scopes
             .first_mut()
             .expect("global scope")
             .insert("rand".into(), rand_f);
-
-        // Constants PI and E
-        let pi = SymbolInfo::Variable {
-            name: "PI".into(),
-            type_ref: Some(TypeReference::new("Number".into(), span.clone())),
-            span: span.clone(),
-        };
-        let e = SymbolInfo::Variable {
-            name: "E".into(),
-            type_ref: Some(TypeReference::new("Number".into(), span.clone())),
-            span: span.clone(),
-        };
-        self.scopes
-            .first_mut()
-            .expect("global scope")
-            .insert("PI".into(), pi);
-        self.scopes
-            .first_mut()
-            .expect("global scope")
-            .insert("E".into(), e);
     }
 }
 

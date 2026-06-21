@@ -15,8 +15,8 @@
 //
 // =============================================================================
 
-use crate::parser::ast::{BinaryOperator, Expr, ExprKind, Literal};
-use crate::semantic::type_system::NormalizedType;
+use crate::parser::ast::{BinaryOperator, Literal};
+use crate::semantic::type_system::{NormalizedType, TypeEnvironment};
 use crate::utils::errors::semantic::SemanticError;
 use crate::utils::errors::span::Span;
 
@@ -27,7 +27,8 @@ type SemanticResult<T> = Result<T, SemanticError>;
 pub struct ExpressionType {
     /// El tipo resultante
     pub type_: NormalizedType,
-    /// Si la expresión es un lvalue (puede asignársele)
+    /// Indica si la expresión representa una ubicación modificable
+    /// (variable, atributo o acceso indexado).
     pub is_lvalue: bool,
 }
 
@@ -53,27 +54,21 @@ impl ExpressionChecker {
     pub fn new() -> Self {
         Self
     }
-
     /// Determina el tipo de una expresión literal
     ///
     /// - Número: Number
     /// - String: String
     /// - true/false: Boolean
-    pub fn check_literal(&self, expr: &Expr) -> SemanticResult<ExpressionType> {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Number(_))
-            | ExprKind::Literal(Literal::Pi)
-            | ExprKind::Literal(Literal::E) => Ok(ExpressionType::value(NormalizedType::Number)),
-            ExprKind::Literal(Literal::String(_)) => {
-                Ok(ExpressionType::value(NormalizedType::String))
-            }
-            ExprKind::Literal(Literal::Boolean(_)) => {
-                Ok(ExpressionType::value(NormalizedType::Boolean))
-            }
-            _ => Err(SemanticError::UnsupportedExpression {
-                expression_type: "expected literal expression".to_string(),
-            }),
-        }
+    pub fn check_literal(&self, literal: &Literal) -> SemanticResult<ExpressionType> {
+        let ty = match literal {
+            Literal::Number(_) | Literal::Pi | Literal::E => NormalizedType::Number,
+
+            Literal::String(_) => NormalizedType::String,
+
+            Literal::Boolean(_) => NormalizedType::Boolean,
+        };
+
+        Ok(ExpressionType::value(ty))
     }
 
     /// Verifica tipos en una operación binaria
@@ -87,13 +82,15 @@ impl ExpressionChecker {
         left_type: &NormalizedType,
         op: &BinaryOperator,
         right_type: &NormalizedType,
-        _span: &Span,
+        environment: &TypeEnvironment,
     ) -> SemanticResult<ExpressionType> {
-        // TODO: Implementar validación de tipos para cada operador
-        // - Validar que los operandos son compatibles
-        // - Retornar el tipo resultante
-        // - Reportar errors específicos (ej: "Cannot add String to Number")
-
+        if left_type.is_print_result() || right_type.is_print_result() {
+            return Err(SemanticError::InvalidOperandType {
+                expected: "value".into(),
+                found: "PrintResult".into(),
+                context: "binary operation".into(),
+            });
+        }
         let result_type = match op {
             BinaryOperator::Add
             | BinaryOperator::Subtract
@@ -114,7 +111,7 @@ impl ExpressionChecker {
             }
             BinaryOperator::Concat | BinaryOperator::Concatenate => {
                 // Concatenación: requiere String
-                if left_type == &NormalizedType::String && right_type == &NormalizedType::String {
+                if Self::can_concatenate(left_type) && Self::can_concatenate(right_type) {
                     NormalizedType::String
                 } else {
                     return Err(SemanticError::InvalidBinaryOperator {
@@ -124,17 +121,29 @@ impl ExpressionChecker {
                     });
                 }
             }
-            BinaryOperator::Equal
-            | BinaryOperator::NotEqual
-            | BinaryOperator::Less
-            | BinaryOperator::LessEqual
-            | BinaryOperator::Greater
-            | BinaryOperator::GreaterEqual => {
+            BinaryOperator::Equal | BinaryOperator::NotEqual => {
                 // Comparación: requiere tipos iguales
-                if left_type == right_type {
+                if environment.is_compatible(left_type, right_type)
+                    || environment.is_compatible(right_type, left_type)
+                {
                     NormalizedType::Boolean
                 } else {
                     return Err(SemanticError::IncomparableTypes {
+                        left_type: left_type.to_string(),
+                        right_type: right_type.to_string(),
+                    });
+                }
+            }
+            BinaryOperator::Less
+            | BinaryOperator::LessEqual
+            | BinaryOperator::Greater
+            | BinaryOperator::GreaterEqual => {
+                // Comparación: requiere Number
+                if left_type == &NormalizedType::Number && right_type == &NormalizedType::Number {
+                    NormalizedType::Boolean
+                } else {
+                    return Err(SemanticError::InvalidBinaryOperator {
+                        operator: format!("{:?}", op),
                         left_type: left_type.to_string(),
                         right_type: right_type.to_string(),
                     });
@@ -157,6 +166,10 @@ impl ExpressionChecker {
         Ok(ExpressionType::value(result_type))
     }
 
+    fn can_concatenate(t: &NormalizedType) -> bool {
+        matches!(t, NormalizedType::String | NormalizedType::Number)
+    }
+
     /// Verifica tipo de operación unaria
     ///
     /// - Negación (-): Number -> Number
@@ -165,9 +178,14 @@ impl ExpressionChecker {
         &self,
         operand_type: &NormalizedType,
         is_negation: bool,
-        _span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        // TODO: Implementar validación de operadores unarios
+        if operand_type.is_print_result() {
+            return Err(SemanticError::InvalidOperandType {
+                expected: "value".to_string(),
+                found: operand_type.to_string(),
+                context: "unary operator".to_string(),
+            });
+        }
         if is_negation {
             if operand_type == &NormalizedType::Number {
                 Ok(ExpressionType::value(NormalizedType::Number))
@@ -190,13 +208,6 @@ impl ExpressionChecker {
         }
     }
 
-    /// Verifica tipo de una expresión agrupada (parentesis)
-    ///
-    /// Simplemente retorna el mismo tipo de la expresión interna
-    pub fn check_grouping(&self, inner_type: &NormalizedType) -> SemanticResult<ExpressionType> {
-        Ok(ExpressionType::value(inner_type.clone()))
-    }
-
     /// Verifica tipo de una llamada a función
     ///
     /// - Valida número de argumentos
@@ -208,7 +219,7 @@ impl ExpressionChecker {
         argument_types: &[NormalizedType],
         expected_params: Option<&[(String, NormalizedType)]>,
         expected_return_type: Option<&NormalizedType>,
-        _span: &Span,
+        environment: &TypeEnvironment,
     ) -> SemanticResult<ExpressionType> {
         // Built-in functions
         match function_name {
@@ -220,8 +231,7 @@ impl ExpressionChecker {
                         found: argument_types.len(),
                     });
                 }
-                // El print asume devolver el mismo tipo del argumento o Unknown
-                return Ok(ExpressionType::value(argument_types[0].clone()));
+                return Ok(ExpressionType::value(NormalizedType::PrintResult));
             }
             "sqrt" | "sin" | "cos" | "exp" => {
                 if argument_types.len() != 1 {
@@ -242,6 +252,17 @@ impl ExpressionChecker {
                         found: argument_types[0].to_string(),
                     });
                 }
+                return Ok(ExpressionType::value(NormalizedType::Number));
+            }
+            "rand" => {
+                if !argument_types.is_empty() {
+                    return Err(SemanticError::WrongArgumentCount {
+                        function: function_name.to_string(),
+                        expected: 0,
+                        found: argument_types.len(),
+                    });
+                }
+
                 return Ok(ExpressionType::value(NormalizedType::Number));
             }
             "log" => {
@@ -292,9 +313,9 @@ impl ExpressionChecker {
             for (i, (arg_type, (param_name, param_type))) in
                 argument_types.iter().zip(params.iter()).enumerate()
             {
-                if arg_type != param_type
-                    && arg_type != &NormalizedType::Unknown
-                    && param_type != &NormalizedType::Unknown
+                if !environment.is_compatible(arg_type, param_type)
+                    && !arg_type.is_unknown()
+                    && !param_type.is_unknown()
                 {
                     return Err(SemanticError::ArgumentTypeMismatch {
                         function: function_name.to_string(),
@@ -323,9 +344,8 @@ impl ExpressionChecker {
         then_type: &NormalizedType,
         elif_branches: &[(NormalizedType, NormalizedType)],
         else_type: Option<&NormalizedType>,
-        _span: &Span,
+        environment: &TypeEnvironment,
     ) -> SemanticResult<ExpressionType> {
-        // Validar condition es Boolean
         if condition_type != &NormalizedType::Boolean {
             return Err(SemanticError::NonBooleanCondition {
                 found_type: condition_type.to_string(),
@@ -333,7 +353,8 @@ impl ExpressionChecker {
             });
         }
 
-        // Validar elif branches
+        let mut result_type = then_type.clone();
+
         for (elif_cond_type, elif_body_type) in elif_branches {
             if elif_cond_type != &NormalizedType::Boolean {
                 return Err(SemanticError::NonBooleanCondition {
@@ -342,25 +363,36 @@ impl ExpressionChecker {
                 });
             }
 
-            if then_type != elif_body_type {
+            if !environment.is_compatible(elif_body_type, &result_type)
+                && !environment.is_compatible(&result_type, elif_body_type)
+            {
                 return Err(SemanticError::IncompatibleBranchTypes {
-                    then_type: then_type.to_string(),
+                    then_type: result_type.to_string(),
                     else_type: elif_body_type.to_string(),
                 });
             }
+
+            if let Some(common) = environment.common_supertype(&result_type, elif_body_type) {
+                result_type = common;
+            }
         }
 
-        // Validar else branch
-        if let Some(else_type) = else_type
-            && then_type != else_type
-        {
-            return Err(SemanticError::IncompatibleBranchTypes {
-                then_type: then_type.to_string(),
-                else_type: else_type.to_string(),
-            });
+        if let Some(else_type) = else_type {
+            if !environment.is_compatible(else_type, &result_type)
+                && !environment.is_compatible(&result_type, else_type)
+            {
+                return Err(SemanticError::IncompatibleBranchTypes {
+                    then_type: result_type.to_string(),
+                    else_type: else_type.to_string(),
+                });
+            }
+
+            if let Some(common) = environment.common_supertype(&result_type, else_type) {
+                result_type = common;
+            }
         }
 
-        Ok(ExpressionType::value(then_type.clone()))
+        Ok(ExpressionType::value(result_type))
     }
 
     /// Verifica tipo de un bloque de expresiones
@@ -370,7 +402,7 @@ impl ExpressionChecker {
         if let Some(last_expr_type) = expr_types.last() {
             Ok(ExpressionType::value(last_expr_type.clone()))
         } else {
-            // Si el bloque está vacío, asume Unknown o void equivalente.
+            // Un bloque vacío no tiene un valor inferible.
             Ok(ExpressionType::value(NormalizedType::Unknown))
         }
     }
@@ -382,7 +414,6 @@ impl ExpressionChecker {
         &self,
         condition_type: &NormalizedType,
         body_type: &NormalizedType,
-        _span: &Span,
     ) -> SemanticResult<ExpressionType> {
         if condition_type != &NormalizedType::Boolean {
             return Err(SemanticError::NonBooleanCondition {
@@ -399,11 +430,10 @@ impl ExpressionChecker {
     /// - Evalúa la parte del iterable
     pub fn check_for_expression(
         &self,
-        _iterable_type: &NormalizedType,
+        iterable_type: &NormalizedType,
         body_type: &NormalizedType,
-        _span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        match _iterable_type {
+        match iterable_type {
             NormalizedType::Iterable(_) | NormalizedType::Vector(_) => {
                 Ok(ExpressionType::value(body_type.clone()))
             }
@@ -423,16 +453,27 @@ impl ExpressionChecker {
         &self,
         annotation_type: Option<&NormalizedType>,
         value_type: Option<&NormalizedType>,
-        _span: &Span,
+        environment: &TypeEnvironment,
+        span: &Span,
     ) -> SemanticResult<ExpressionType> {
+        if let Some(found) = value_type
+            && found.is_print_result()
+        {
+            return Err(SemanticError::InvalidOperandType {
+                expected: "value".to_string(),
+                found: found.to_string(),
+                context: "let".to_string(),
+            });
+        }
+
         if let (Some(expected), Some(found)) = (annotation_type, value_type)
-            && expected != found
+            && !environment.is_compatible(found, expected)
         {
             return Err(SemanticError::TypeMismatch {
                 expected: expected.to_string(),
                 found: found.to_string(),
                 context: "asignación en let".to_string(),
-                span: _span.clone(),
+                span: span.clone(),
             });
         }
 
@@ -453,27 +494,35 @@ impl ExpressionChecker {
         &self,
         target_type: &ExpressionType,
         value_type: &NormalizedType,
-        _span: &Span,
+        environment: &TypeEnvironment,
+        span: &Span,
     ) -> SemanticResult<ExpressionType> {
+        if value_type.is_print_result() {
+            return Err(SemanticError::InvalidOperandType {
+                expected: "value".to_string(),
+                found: value_type.to_string(),
+                context: "assignment".to_string(),
+            });
+        }
         if !target_type.is_lvalue {
             return Err(SemanticError::InvalidTarget {
                 context: "asignación (no es lvalue)".to_string(),
             });
         }
 
-        if target_type.type_ != *value_type
-            && target_type.type_ != NormalizedType::Unknown
-            && *value_type != NormalizedType::Unknown
+        if !environment.is_compatible(value_type, &target_type.type_)
+            && !target_type.type_.is_unknown()
+            && !value_type.is_unknown()
         {
             return Err(SemanticError::TypeMismatch {
                 expected: target_type.type_.to_string(),
                 found: value_type.to_string(),
                 context: "asignación".to_string(),
-                span: _span.clone(),
+                span: span.clone(),
             });
         }
 
-        Ok(ExpressionType::value(value_type.clone()))
+        Ok(ExpressionType::value(target_type.type_.clone()))
     }
 
     /// Verifica tipo de constructor (new)
@@ -485,8 +534,13 @@ impl ExpressionChecker {
         type_name: &str,
         argument_types: &[NormalizedType],
         expected_params: Option<&[(String, NormalizedType)]>,
-        _span: &Span,
+        environment: &TypeEnvironment,
     ) -> SemanticResult<ExpressionType> {
+        if !environment.has_type(type_name) {
+            return Err(SemanticError::UndeclaredType {
+                name: type_name.to_string(),
+            });
+        }
         if let Some(params) = expected_params {
             if argument_types.len() != params.len() {
                 return Err(SemanticError::InvalidConstructor {
@@ -502,9 +556,9 @@ impl ExpressionChecker {
             for (i, (arg_type, (param_name, param_type))) in
                 argument_types.iter().zip(params.iter()).enumerate()
             {
-                if arg_type != param_type
-                    && arg_type != &NormalizedType::Unknown
-                    && param_type != &NormalizedType::Unknown
+                if !environment.is_compatible(arg_type, param_type)
+                    && *arg_type != NormalizedType::Unknown
+                    && *param_type != NormalizedType::Unknown
                 {
                     return Err(SemanticError::ArgumentTypeMismatch {
                         function: type_name.to_string(),
@@ -527,10 +581,9 @@ impl ExpressionChecker {
         object_type: &NormalizedType,
         member_name: &str,
         member_type: Option<&NormalizedType>,
-        _span: &Span,
     ) -> SemanticResult<ExpressionType> {
         if let Some(m_type) = member_type {
-            // Propiedades suelen ser lvalues, por convención asignamos true. Dependerá de las reglas si son mutables.
+            // Los atributos son lvalues porque pueden participar en asignaciones.
             Ok(ExpressionType::lvalue(m_type.clone()))
         } else {
             Err(SemanticError::MemberNotFound {
@@ -545,25 +598,42 @@ impl ExpressionChecker {
     /// - Retorna Boolean
     pub fn check_is(
         &self,
-        _expr_type: &NormalizedType,
-        _target_type: &NormalizedType,
-        _span: &Span,
+        expr_type: &NormalizedType,
+        target_type: &NormalizedType,
+        environment: &TypeEnvironment,
     ) -> SemanticResult<ExpressionType> {
-        // TODO: Validar que expr_type e target_type son válidos para is
+        if !environment.can_use_is(expr_type, target_type) {
+            return Err(SemanticError::InvalidOperandType {
+                expected: target_type.to_string(),
+
+                found: expr_type.to_string(),
+
+                context: "is".to_string(),
+            });
+        }
+
         Ok(ExpressionType::value(NormalizedType::Boolean))
     }
-
     /// Verifica tipo de operación as (type cast)
     ///
     /// - Retorna el tipo destino
     pub fn check_as(
         &self,
-        _expr_type: &NormalizedType,
+        expr_type: &NormalizedType,
         target_type: &NormalizedType,
-        _span: &Span,
+        environment: &TypeEnvironment,
     ) -> SemanticResult<ExpressionType> {
-        // TODO: Validar que el cast es válido (upcast o downcast permitido)
-        Ok(ExpressionType::value(target_type.clone()))
+        if environment.is_compatible(expr_type, target_type)
+            || environment.is_compatible(target_type, expr_type)
+        {
+            Ok(ExpressionType::value(target_type.clone()))
+        } else {
+            Err(SemanticError::InvalidOperandType {
+                expected: target_type.to_string(),
+                found: expr_type.to_string(),
+                context: "as".to_string(),
+            })
+        }
     }
 
     /// Verifica acceso a índice de vector
@@ -571,7 +641,6 @@ impl ExpressionChecker {
         &self,
         object_type: &NormalizedType,
         index_type: &NormalizedType,
-        _span: &Span,
     ) -> SemanticResult<ExpressionType> {
         if *index_type != NormalizedType::Number && *index_type != NormalizedType::Unknown {
             return Err(SemanticError::InvalidIndexType {
@@ -596,7 +665,7 @@ impl ExpressionChecker {
     pub fn check_vector_literal(
         &self,
         element_types: &[NormalizedType],
-        _span: &Span,
+        environment: &TypeEnvironment,
     ) -> SemanticResult<ExpressionType> {
         if element_types.is_empty() {
             return Ok(ExpressionType::value(NormalizedType::Vector(Box::new(
@@ -604,14 +673,14 @@ impl ExpressionChecker {
             ))));
         }
 
-        let first_type = &element_types[0];
+        let mut vector_type = element_types[0].clone();
+
         for (i, element_type) in element_types.iter().enumerate().skip(1) {
-            if element_type != first_type
-                && *element_type != NormalizedType::Unknown
-                && *first_type != NormalizedType::Unknown
-            {
+            if let Some(common) = environment.common_supertype(&vector_type, element_type) {
+                vector_type = common;
+            } else {
                 return Err(SemanticError::InconsistentArrayTypes {
-                    expected: first_type.to_string(),
+                    expected: vector_type.to_string(),
                     found: element_type.to_string(),
                     position: i,
                 });
@@ -619,7 +688,7 @@ impl ExpressionChecker {
         }
 
         Ok(ExpressionType::value(NormalizedType::Vector(Box::new(
-            first_type.clone(),
+            vector_type,
         ))))
     }
 
@@ -627,8 +696,6 @@ impl ExpressionChecker {
     pub fn check_iterable_usage(
         &self,
         element_expr_type: &NormalizedType,
-        _iterable_type: &NormalizedType,
-        _span: &Span,
     ) -> SemanticResult<ExpressionType> {
         Ok(ExpressionType::value(NormalizedType::Iterable(Box::new(
             element_expr_type.clone(),

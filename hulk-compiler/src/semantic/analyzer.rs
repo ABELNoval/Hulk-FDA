@@ -19,7 +19,7 @@ use crate::parser::ast::{
     DeclarationKind, Expr, ExprKind, FunctionDeclaration, TypeMember, TypeReferenceKind,
 };
 use crate::semantic::expression_checker::ExpressionChecker;
-use crate::semantic::symbol_table::SymbolTable;
+use crate::semantic::symbol_table::{SymbolInfo, SymbolTable};
 use crate::semantic::type_system::NormalizedType;
 use crate::semantic::type_system::TypeEnvironment;
 use crate::utils::errors::semantic::SemanticError;
@@ -128,8 +128,8 @@ impl SemanticAnalyzer {
         self.check_declarations(program)?;
         self.check_entry_expression(program)?;
 
-        if self.context.has_errors() {
-            return Err(self.context.errors[0].clone());
+        if let Some(error) = self.context.errors.first() {
+            return Err(error.clone());
         }
 
         Ok(())
@@ -242,12 +242,16 @@ impl SemanticAnalyzer {
                 if let Err(e) = self.context.types.validate_function_signature(func) {
                     self.report_error(e);
                 }
+                let normalized_return = match &func.return_type {
+                    Some(type_ref) => self.context.types.validate_type_reference(type_ref)?,
+                    None => NormalizedType::Unknown,
+                };
 
                 // Declare function in symbol table
                 let sym = crate::semantic::symbol_table::SymbolInfo::Function {
                     name: func.name.clone(),
                     parameters: func.parameters.clone(),
-                    return_type: func.return_type.clone(),
+                    return_type: normalized_return,
                     span: crate::utils::errors::span::Span::default(),
                 };
 
@@ -265,9 +269,15 @@ impl SemanticAnalyzer {
 
                 // declare parameters as Parameter symbols with their annotations
                 for p in &func.parameters {
+                    let normalized_type = match &p.annotation {
+                        Some(annotation) => {
+                            self.context.types.validate_type_reference(annotation)?
+                        }
+                        None => NormalizedType::Unknown,
+                    };
                     let param_sym = crate::semantic::symbol_table::SymbolInfo::Parameter {
                         name: p.name.clone(),
-                        type_ref: p.annotation.clone(),
+                        type_ref: normalized_type,
                         span: p.span.clone(),
                     };
                     if let Err(e) = self.context.symbols.declare(param_sym) {
@@ -317,11 +327,13 @@ impl SemanticAnalyzer {
     }
 
     /// Verifica la expresión de entrada del programa
-    fn check_entry_expression(&mut self, _program: &Program) -> SemanticResult<()> {
-        if let Some(expr) = &_program.entry_expression {
-            // Try to infer/check the expression and collect errors
-            let _ = self.analyze_expr(expr);
+    fn check_entry_expression(&mut self, program: &Program) -> SemanticResult<()> {
+        if let Some(expr) = &program.entry_expression {
+            if let Err(e) = self.analyze_expr(expr) {
+                self.report_error(e);
+            }
         }
+
         Ok(())
     }
 
@@ -329,109 +341,100 @@ impl SemanticAnalyzer {
     /// available symbol/type information to validate common constructs.
     fn analyze_expr(&mut self, expr: &Expr) -> Result<NormalizedType, SemanticError> {
         match &expr.kind {
-            ExprKind::Literal(_) => {
-                let et = self.context.expression_checker.check_literal(expr)?;
+            ExprKind::Literal(literal) => {
+                let et = self.context.expression_checker.check_literal(literal)?;
+
                 Ok(et.type_)
             }
-            ExprKind::Identifier(name) => match self.context.symbols.lookup(name.as_str()) {
-                Some(sym) => match sym {
-                    crate::semantic::symbol_table::SymbolInfo::Variable { type_ref, .. }
-                    | crate::semantic::symbol_table::SymbolInfo::Parameter { type_ref, .. } => {
-                        if let Some(tr) = type_ref {
-                            match self.context.types.validate_type_reference(&tr) {
-                                Ok(nt) => Ok(nt),
-                                Err(e) => {
-                                    self.report_error(e.clone());
-                                    Ok(NormalizedType::Unknown)
-                                }
-                            }
-                        } else {
-                            Ok(NormalizedType::Unknown)
-                        }
-                    }
-                    crate::semantic::symbol_table::SymbolInfo::Function { .. } => {
-                        Ok(NormalizedType::Unknown)
-                    }
-                    _ => Ok(NormalizedType::Unknown),
-                },
+            ExprKind::Identifier(name) => match self.context.symbols.lookup(name) {
+                Some(SymbolInfo::Variable { type_ref, .. })
+                | Some(SymbolInfo::Parameter { type_ref, .. }) => Ok(type_ref.clone()),
+
+                Some(SymbolInfo::Function { .. }) => Ok(NormalizedType::Unknown),
+
+                Some(_) => Ok(NormalizedType::Unknown),
+
                 None => {
                     self.report_error(SemanticError::UndeclaredVariable {
                         name: name.clone(),
                         span: expr.span.clone(),
                     });
+
                     Ok(NormalizedType::Unknown)
                 }
             },
             ExprKind::Call { callee, arguments } => {
-                // Only handle simple identifier callees
                 if let ExprKind::Identifier(name) = &callee.kind {
+                    // 1. Obtener tipos de los argumentos
                     let mut arg_types = Vec::new();
-                    for a in arguments {
-                        arg_types.push(self.analyze_expr(a)?);
+
+                    for arg in arguments {
+                        arg_types.push(self.analyze_expr(arg)?);
                     }
 
-                    // Try to obtain expected params/return from symbol table or from a
-                    // protocol named in the variable's annotation (e.g., a functor protocol
-                    // that defines `invoke(...)`). This allows calling parameters that are
-                    // typed as a protocol with an `invoke` method.
+                    // 2. Construir la firma esperada
                     let mut expected_params: Option<Vec<(String, NormalizedType)>> = None;
                     let mut expected_return: Option<NormalizedType> = None;
 
-                    match self.context.symbols.lookup(name.as_str()) {
-                        Some(crate::semantic::symbol_table::SymbolInfo::Function {
+                    match self.context.symbols.lookup(name) {
+                        // Función normal
+                        Some(SymbolInfo::Function {
                             parameters,
                             return_type,
                             ..
                         }) => {
-                            let mut params = Vec::new();
-                            for p in parameters {
-                                let t = if let Some(ann) = &p.annotation {
-                                    self.context
-                                        .types
-                                        .validate_type_reference(ann)
-                                        .unwrap_or(NormalizedType::Unknown)
-                                } else {
-                                    NormalizedType::Unknown
-                                };
-                                params.push((p.name.clone(), t));
-                            }
-                            expected_params = Some(params);
-                            expected_return = return_type
-                                .as_ref()
-                                .and_then(|rt| self.context.types.validate_type_reference(rt).ok());
-                        }
-                        Some(crate::semantic::symbol_table::SymbolInfo::Variable {
-                            type_ref,
-                            ..
-                        })
-                        | Some(crate::semantic::symbol_table::SymbolInfo::Parameter {
-                            type_ref,
-                            ..
-                        }) => {
-                            if let Some(tr) = type_ref
-                                && let crate::parser::ast::TypeReferenceKind::Named(type_name) =
-                                    &tr.kind
-                            {
-                                // If the annotation names a protocol, try to extract an
-                                // `invoke` method signature from it.
-                                if let Some(proto) = self.context.types.get_protocol(type_name)
-                                    && let Some(invoke_sig) =
-                                        proto.members.iter().find(|m| m.name == "invoke")
-                                {
-                                    let mut params = Vec::new();
-                                    for p in &invoke_sig.parameters {
-                                        let t = if let Some(ann) = &p.annotation {
+                            let params = parameters
+                                .iter()
+                                .map(|p| {
+                                    let ty = p
+                                        .annotation
+                                        .as_ref()
+                                        .map(|ann| {
                                             self.context
                                                 .types
                                                 .validate_type_reference(ann)
                                                 .unwrap_or(NormalizedType::Unknown)
-                                        } else {
-                                            NormalizedType::Unknown
-                                        };
-                                        params.push((p.name.clone(), t));
-                                    }
+                                        })
+                                        .unwrap_or(NormalizedType::Unknown);
+
+                                    (p.name.clone(), ty)
+                                })
+                                .collect();
+
+                            expected_params = Some(params);
+
+                            expected_return = Some(return_type.clone());
+                        }
+
+                        // Variables o parámetros que implementan invoke
+                        Some(SymbolInfo::Variable { type_ref, .. })
+                        | Some(SymbolInfo::Parameter { type_ref, .. }) => {
+                            if let NormalizedType::Named(type_name) = &type_ref {
+                                if let Some(proto) = self.context.types.get_protocol(type_name)
+                                    && let Some(invoke_sig) =
+                                        proto.members.iter().find(|m| m.name == "invoke")
+                                {
+                                    let params = invoke_sig
+                                        .parameters
+                                        .iter()
+                                        .map(|p| {
+                                            let ty = p
+                                                .annotation
+                                                .as_ref()
+                                                .map(|ann| {
+                                                    self.context
+                                                        .types
+                                                        .validate_type_reference(ann)
+                                                        .unwrap_or(NormalizedType::Unknown)
+                                                })
+                                                .unwrap_or(NormalizedType::Unknown);
+
+                                            (p.name.clone(), ty)
+                                        })
+                                        .collect();
+
                                     expected_params = Some(params);
-                                    // return type for invoke is required in protocols
+
                                     expected_return = Some(
                                         self.context
                                             .types
@@ -439,48 +442,50 @@ impl SemanticAnalyzer {
                                             .unwrap_or(NormalizedType::Unknown),
                                     );
                                 }
-                            } else {
-                                // No annotation: try to use inferred signature (collected
-                                // during this function body's analysis). If none exists yet,
-                                // record the observed argument types so subsequent calls
-                                // can be checked against the first observed signature.
-                                if let Some(map) = &mut self.current_inferred_signatures {
-                                    let entry = map.entry(name.clone()).or_insert_with(Vec::new);
-                                    // push the observed arg types for later unification
-                                    entry.push(arg_types.clone());
+                            }
 
-                                    // If this is the first observed call, use it to build
-                                    // an expected_params vector for immediate checking.
-                                    if let Some(first) = entry.first() {
-                                        let mut params = Vec::new();
-                                        for (i, t) in first.iter().enumerate() {
-                                            params.push((format!("arg{}", i), t.clone()));
-                                        }
-                                        expected_params = Some(params);
-                                        // return type remains unknown in this heuristic
-                                        expected_return = None;
-                                    }
+                            // Inferencia de firmas
+                            if let Some(map) = &mut self.current_inferred_signatures {
+                                let entry = map.entry(name.clone()).or_insert_with(Vec::new);
+
+                                entry.push(arg_types.clone());
+
+                                if let Some(first) = entry.first() {
+                                    let params = first
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, t)| (format!("arg{}", i), t.clone()))
+                                        .collect();
+
+                                    expected_params = Some(params);
                                 }
                             }
                         }
+
                         _ => {}
                     }
 
+                    // 3. Delegar la validación al checker
                     match self.context.expression_checker.check_function_call(
                         name,
                         &arg_types,
                         expected_params.as_deref(),
                         expected_return.as_ref(),
-                        &expr.span,
+                        &self.context.types,
                     ) {
                         Ok(res) => Ok(res.type_),
+
                         Err(e) => {
                             self.report_error(e.clone());
+
                             Ok(NormalizedType::Unknown)
                         }
                     }
                 } else {
-                    // Complex callee (member calls etc.) not yet supported
+                    self.report_error(SemanticError::UnsupportedFeature {
+                        feature: "complex function calls".to_string(),
+                    });
+
                     Ok(NormalizedType::Unknown)
                 }
             }
@@ -489,21 +494,25 @@ impl SemanticAnalyzer {
                 operator,
                 right,
             } => {
-                let lt = self.analyze_expr(left)?;
-                let rt = self.analyze_expr(right)?;
-                match self
-                    .context
-                    .expression_checker
-                    .check_binary_op(&lt, operator, &rt, &expr.span)
-                {
-                    Ok(et) => Ok(et.type_),
+                let left_type = self.analyze_expr(left)?;
+
+                let right_type = self.analyze_expr(right)?;
+
+                match self.context.expression_checker.check_binary_op(
+                    &left_type,
+                    operator,
+                    &right_type,
+                    &self.context.types,
+                ) {
+                    Ok(res) => Ok(res.type_),
+
                     Err(e) => {
                         self.report_error(e.clone());
+
                         Ok(NormalizedType::Unknown)
                     }
                 }
             }
-            ExprKind::Grouping(inner) => self.analyze_expr(inner),
             ExprKind::Block(exprs) => {
                 let mut types = Vec::new();
                 for e in exprs {
@@ -512,6 +521,65 @@ impl SemanticAnalyzer {
                 let et = self.context.expression_checker.check_block(&types)?;
                 Ok(et.type_)
             }
+            ExprKind::Let {
+                name,
+                annotation,
+                value,
+                body,
+            } => {
+                self.context.symbols.enter_scope();
+
+                let value_type = self.analyze_expr(value)?;
+
+                let annotation_type = match annotation {
+                    Some(annotation) => {
+                        match self.context.types.validate_type_reference(annotation) {
+                            Ok(t) => Some(t),
+
+                            Err(e) => {
+                                self.report_error(e);
+
+                                None
+                            }
+                        }
+                    }
+
+                    None => None,
+                };
+
+                let final_type = match self.context.expression_checker.check_let_expression(
+                    annotation_type.as_ref(),
+                    Some(&value_type),
+                    &self.context.types,
+                    &expr.span,
+                ) {
+                    Ok(res) => res.type_,
+
+                    Err(e) => {
+                        self.report_error(e);
+
+                        NormalizedType::Unknown
+                    }
+                };
+
+                let symbol = SymbolInfo::Variable {
+                    name: name.clone(),
+
+                    type_ref: final_type,
+
+                    span: expr.span.clone(),
+                };
+
+                if let Err(e) = self.context.symbols.declare(symbol) {
+                    self.report_error(e);
+                }
+
+                let body_type = self.analyze_expr(body);
+
+                self.context.symbols.exit_scope();
+
+                body_type
+            }
             ExprKind::If {
                 condition,
                 then_expr,
@@ -519,32 +587,37 @@ impl SemanticAnalyzer {
                 else_expr,
             } => {
                 let cond_t = self.analyze_expr(condition)?;
+
                 let then_t = self.analyze_expr(then_expr)?;
+
                 let mut elif_types = Vec::new();
-                for (c, e) in elif_parts {
-                    let ct = self.analyze_expr(c)?;
-                    let et = self.analyze_expr(e)?;
-                    elif_types.push((ct, et));
+
+                for (condition, body) in elif_parts {
+                    let elif_cond = self.analyze_expr(condition)?;
+
+                    let elif_body = self.analyze_expr(body)?;
+
+                    elif_types.push((elif_cond, elif_body));
                 }
-                let else_t = if let Some(e) = else_expr {
-                    Some(self.analyze_expr(e)?)
-                } else {
-                    None
+
+                let else_t = match else_expr {
+                    Some(expr) => Some(self.analyze_expr(expr)?),
+
+                    None => None,
                 };
 
                 match self.context.expression_checker.check_if_expression(
                     &cond_t,
                     &then_t,
-                    &elif_types
-                        .iter()
-                        .map(|(a, b)| (a.clone(), b.clone()))
-                        .collect::<Vec<_>>(),
+                    &elif_types,
                     else_t.as_ref(),
-                    &expr.span,
+                    &self.context.types,
                 ) {
                     Ok(res) => Ok(res.type_),
+
                     Err(e) => {
                         self.report_error(e.clone());
+
                         Ok(NormalizedType::Unknown)
                     }
                 }
@@ -554,20 +627,27 @@ impl SemanticAnalyzer {
                 type_ref,
             } => {
                 let expr_t = self.analyze_expr(inner)?;
-                match self.context.types.validate_type_reference(type_ref) {
-                    Ok(target_t) => match self
-                        .context
-                        .expression_checker
-                        .check_is(&expr_t, &target_t, &expr.span)
-                    {
-                        Ok(et) => Ok(et.type_),
-                        Err(e) => {
-                            self.report_error(e.clone());
-                            Ok(NormalizedType::Unknown)
-                        }
-                    },
+
+                let target_t = match self.context.types.validate_type_reference(type_ref) {
+                    Ok(t) => t,
+
                     Err(e) => {
-                        self.report_error(e.clone());
+                        self.report_error(e);
+
+                        return Ok(NormalizedType::Unknown);
+                    }
+                };
+
+                match self.context.expression_checker.check_is(
+                    &expr_t,
+                    &target_t,
+                    &self.context.types,
+                ) {
+                    Ok(res) => Ok(res.type_),
+
+                    Err(e) => {
+                        self.report_error(e);
+
                         Ok(NormalizedType::Unknown)
                     }
                 }
@@ -577,39 +657,27 @@ impl SemanticAnalyzer {
                 type_ref,
             } => {
                 let expr_t = self.analyze_expr(inner)?;
-                match self.context.types.validate_type_reference(type_ref) {
-                    Ok(target_t) => {
-                        // Allow cast if same type, unknowns, or types are compatible in either direction
-                        if expr_t == target_t
-                            || expr_t == NormalizedType::Unknown
-                            || target_t == NormalizedType::Unknown
-                            || self.context.types.is_compatible(&expr_t, &target_t)
-                            || self.context.types.is_compatible(&target_t, &expr_t)
-                        {
-                            match self
-                                .context
-                                .expression_checker
-                                .check_as(&expr_t, &target_t, &expr.span)
-                            {
-                                Ok(et) => Ok(et.type_),
-                                Err(e) => {
-                                    self.report_error(e.clone());
-                                    Ok(NormalizedType::Unknown)
-                                }
-                            }
-                        } else {
-                            // Not compatible cast
-                            self.report_error(SemanticError::TypeMismatch {
-                                expected: target_t.to_string(),
-                                found: expr_t.to_string(),
-                                context: "cast".to_string(),
-                                span: expr.span.clone(),
-                            });
-                            Ok(target_t)
-                        }
-                    }
+
+                let target_t = match self.context.types.validate_type_reference(type_ref) {
+                    Ok(t) => t,
+
                     Err(e) => {
-                        self.report_error(e.clone());
+                        self.report_error(e);
+
+                        return Ok(NormalizedType::Unknown);
+                    }
+                };
+
+                match self.context.expression_checker.check_as(
+                    &expr_t,
+                    &target_t,
+                    &self.context.types,
+                ) {
+                    Ok(res) => Ok(res.type_),
+
+                    Err(e) => {
+                        self.report_error(e);
+
                         Ok(NormalizedType::Unknown)
                     }
                 }

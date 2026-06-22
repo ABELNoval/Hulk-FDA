@@ -53,12 +53,11 @@ pub fn run_native_pipeline(
     }
 
     let command = format!(
-        "cd {} && ./scripts/emit_bc_from_ll.sh {} {} && ./scripts/build_from_bc.sh {} {} && {}",
+        "cd {} && ./scripts/emit_bc_from_ll.sh {} {} && ./scripts/build_from_bc.sh {} {}",
         shell_quote(&shell_path(project_root)),
         shell_quote(&shell_path(llvm_ir_path)),
         shell_quote(&shell_path(bitcode_path)),
         shell_quote(&shell_path(bitcode_path)),
-        shell_quote(&shell_path(executable_path)),
         shell_quote(&shell_path(executable_path)),
     );
 

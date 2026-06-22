@@ -14,10 +14,10 @@
 //
 // =============================================================================
 
-use crate::parser::ast::Program;
 use crate::parser::ast::{
     DeclarationKind, Expr, ExprKind, FunctionDeclaration, TypeMember, TypeReferenceKind,
 };
+use crate::parser::ast::{Program, UnaryOperator};
 use crate::semantic::expression_checker::ExpressionChecker;
 use crate::semantic::symbol_table::{SymbolInfo, SymbolTable};
 use crate::semantic::type_system::NormalizedType;
@@ -363,6 +363,25 @@ impl SemanticAnalyzer {
                     Ok(NormalizedType::Unknown)
                 }
             },
+            ExprKind::Unary { operator, operand } => {
+                let operand_t = self.analyze_expr(operand)?;
+
+                let is_negation = matches!(operator, UnaryOperator::Minus);
+
+                match self
+                    .context
+                    .expression_checker
+                    .check_unary_op(&operand_t, is_negation)
+                {
+                    Ok(res) => Ok(res.type_),
+
+                    Err(e) => {
+                        self.report_error(e.clone());
+
+                        Ok(NormalizedType::Unknown)
+                    }
+                }
+            }
             ExprKind::Call { callee, arguments } => {
                 if let ExprKind::Identifier(name) = &callee.kind {
                     // 1. Obtener tipos de los argumentos
@@ -376,93 +395,35 @@ impl SemanticAnalyzer {
                     let mut expected_params: Option<Vec<(String, NormalizedType)>> = None;
                     let mut expected_return: Option<NormalizedType> = None;
 
-                    match self.context.symbols.lookup(name) {
-                        // Función normal
-                        Some(SymbolInfo::Function {
-                            parameters,
-                            return_type,
-                            ..
-                        }) => {
-                            let params = parameters
-                                .iter()
-                                .map(|p| {
-                                    let ty = p
-                                        .annotation
-                                        .as_ref()
-                                        .map(|ann| {
-                                            self.context
-                                                .types
-                                                .validate_type_reference(ann)
-                                                .unwrap_or(NormalizedType::Unknown)
-                                        })
-                                        .unwrap_or(NormalizedType::Unknown);
-
-                                    (p.name.clone(), ty)
-                                })
-                                .collect();
-
-                            expected_params = Some(params);
-
-                            expected_return = Some(return_type.clone());
-                        }
-
-                        // Variables o parámetros que implementan invoke
-                        Some(SymbolInfo::Variable { type_ref, .. })
-                        | Some(SymbolInfo::Parameter { type_ref, .. }) => {
-                            if let NormalizedType::Named(type_name) = &type_ref {
-                                if let Some(proto) = self.context.types.get_protocol(type_name)
-                                    && let Some(invoke_sig) =
-                                        proto.members.iter().find(|m| m.name == "invoke")
-                                {
-                                    let params = invoke_sig
-                                        .parameters
-                                        .iter()
-                                        .map(|p| {
-                                            let ty = p
-                                                .annotation
-                                                .as_ref()
-                                                .map(|ann| {
-                                                    self.context
-                                                        .types
-                                                        .validate_type_reference(ann)
-                                                        .unwrap_or(NormalizedType::Unknown)
-                                                })
-                                                .unwrap_or(NormalizedType::Unknown);
-
-                                            (p.name.clone(), ty)
-                                        })
-                                        .collect();
-
-                                    expected_params = Some(params);
-
-                                    expected_return = Some(
+                    if let Some(SymbolInfo::Function {
+                        parameters,
+                        return_type,
+                        ..
+                    }) = self.context.symbols.lookup(name)
+                    {
+                        let params = parameters
+                            .iter()
+                            .map(|p| {
+                                let ty = p
+                                    .annotation
+                                    .as_ref()
+                                    .map(|ann| {
                                         self.context
                                             .types
-                                            .validate_type_reference(&invoke_sig.return_type)
-                                            .unwrap_or(NormalizedType::Unknown),
-                                    );
-                                }
-                            }
+                                            .validate_type_reference(ann)
+                                            .unwrap_or(NormalizedType::Unknown)
+                                    })
+                                    .unwrap_or(NormalizedType::Unknown);
 
-                            // Inferencia de firmas
-                            if let Some(map) = &mut self.current_inferred_signatures {
-                                let entry = map.entry(name.clone()).or_insert_with(Vec::new);
+                                (p.name.clone(), ty)
+                            })
+                            .collect();
 
-                                entry.push(arg_types.clone());
+                        expected_params = Some(params);
 
-                                if let Some(first) = entry.first() {
-                                    let params = first
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, t)| (format!("arg{}", i), t.clone()))
-                                        .collect();
-
-                                    expected_params = Some(params);
-                                }
-                            }
-                        }
-
-                        _ => {}
+                        expected_return = Some(return_type.clone());
+                    } else {
+                        self.report_error(SemanticError::UndefinedFunction { name: name.clone() });
                     }
 
                     // 3. Delegar la validación al checker
@@ -587,6 +548,7 @@ impl SemanticAnalyzer {
                 else_expr,
             } => {
                 let cond_t = self.analyze_expr(condition)?;
+                println!("IF -> {:?}", cond_t);
 
                 let then_t = self.analyze_expr(then_expr)?;
 

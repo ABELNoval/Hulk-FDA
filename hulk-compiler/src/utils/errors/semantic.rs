@@ -86,6 +86,10 @@ pub enum SemanticError {
     /// Ejemplo: foo();  // foo no existe
     UndeclaredFunction { name: String },
 
+    /// Función no definida
+    /// Ejemplo: foo();  // foo no está definida
+    UndefinedFunction { name: String },
+
     /// Función declarada múltiples veces
     FunctionAlreadyDeclared {
         name: String,
@@ -273,6 +277,7 @@ impl DisplayError for SemanticError {
             SemanticError::InvalidTarget { .. } => "E2017",
             // Funciones
             SemanticError::UndeclaredFunction { .. } => "E2020",
+            /// Función ya declarada
             SemanticError::FunctionAlreadyDeclared { .. } => "E2021",
             SemanticError::WrongArgumentCount { .. } => "E2022",
             SemanticError::ArgumentTypeMismatch { .. } => "E2023",
@@ -316,6 +321,7 @@ impl DisplayError for SemanticError {
                 first_line,
                 first_column,
             } => "E2101",
+            SemanticError::UndefinedFunction { name } => "E2102",
         }
     }
 
@@ -621,6 +627,9 @@ impl DisplayError for SemanticError {
                     "protocolo ya declarado: {} en la línea {}, columna {}",
                     name, first_line, first_column
                 )
+            }
+            SemanticError::UndefinedFunction { name } => {
+                format!("función no definida: {}", name)
             }
         }
     }

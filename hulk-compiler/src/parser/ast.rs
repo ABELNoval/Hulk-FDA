@@ -453,7 +453,6 @@ pub enum Literal {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOperator {
-    Plus,
     Minus,
     Not,
 }
@@ -461,7 +460,6 @@ pub enum UnaryOperator {
 impl UnaryOperator {
     pub fn from_token_type(token_type: &TokenType) -> Option<Self> {
         match token_type {
-            TokenType::Plus => Some(Self::Plus),
             TokenType::Minus => Some(Self::Minus),
             TokenType::Bang => Some(Self::Not),
             _ => None,

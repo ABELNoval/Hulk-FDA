@@ -120,6 +120,16 @@ impl Parser {
                 };
             }
 
+            if !self.cursor.is_at_end() {
+                match self.expect(TokenType::Semicolon) {
+                    Ok(token) => token.span,
+                    Err(_) => {
+                        self.synchronize();
+                        self.cursor.peek().span.clone()
+                    }
+                };
+            }
+
             while self.cursor.match_token(&TokenType::Semicolon) {}
             break;
         }
@@ -160,7 +170,13 @@ impl Parser {
         while !self.cursor.check(&TokenType::RightBrace) && !self.cursor.is_at_end() {
             let expr = self.parse_expression();
             expressions.push(expr);
-            self.cursor.match_token(&TokenType::Semicolon);
+            match self.expect(TokenType::Semicolon) {
+                Ok(token) => token.span,
+                Err(_) => {
+                    self.synchronize();
+                    self.cursor.peek().span.clone()
+                }
+            };
         }
 
         let end_span = match self.expect(TokenType::RightBrace) {
@@ -555,10 +571,7 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Expr {
-        if self
-            .cursor
-            .check_any(&[TokenType::Plus, TokenType::Minus, TokenType::Bang])
-        {
+        if self.cursor.check_any(&[TokenType::Minus, TokenType::Bang]) {
             let operator = self.cursor.advance();
             let operand = self.parse_unary();
             let span = operator.span.merge(&operand.span);

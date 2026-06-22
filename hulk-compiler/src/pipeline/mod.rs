@@ -22,7 +22,9 @@
 //
 // =============================================================================
 
-use crate::codegen::{CodegenArtifact, CodegenBackend, CodegenContext, CodegenTarget, LlvmInkwellBackend};
+use crate::codegen::{
+    CodegenArtifact, CodegenBackend, CodegenContext, CodegenTarget, LlvmInkwellBackend,
+};
 use crate::ir::{IRBuilder, IRModule, run_ssa_renaming};
 use crate::lexer::{Lexer, Token};
 use crate::parser::{Parser, Program};
@@ -111,6 +113,7 @@ impl CompilationPipeline {
         }
 
         let mut ir = self.ir(&program)?;
+        println!("{:#?}", ir);
         run_ssa_renaming(&mut ir);
 
         if stage == PipelineStage::Ir {
@@ -158,7 +161,9 @@ impl CompilationPipeline {
 
     pub fn semantic(&self, program: &Program) -> CompileResult<()> {
         let mut analyzer = SemanticAnalyzer::new();
-        analyzer.analyze(program).map_err(CompilationError::semantic)?;
+        analyzer
+            .analyze(program)
+            .map_err(CompilationError::semantic)?;
         Ok(())
     }
 
@@ -192,7 +197,13 @@ impl CompilationPipeline {
 
         let sanitized: String = candidate
             .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' { ch } else { '_' })
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
             .collect();
 
         if sanitized.is_empty() {

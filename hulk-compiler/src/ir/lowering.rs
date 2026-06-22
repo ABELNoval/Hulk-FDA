@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::parser::ast::{
     BinaryOperator, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal, Parameter,
-    Program, TypeReference, UnaryOperator, VariableDeclaration,
+    Program, TypeReference, UnaryOperator,
 };
 use crate::utils::errors::span::Span;
 
@@ -217,6 +217,7 @@ impl IRBuilder {
 
     pub fn lower_program(&mut self, program: &Program) -> Result<IRModule, IRLoweringError> {
         self.reset();
+
         self.module = IRModule::new(IRNaming::module_name("lowered"));
 
         for declaration in &program.declarations {
@@ -225,13 +226,7 @@ impl IRBuilder {
             }
         }
 
-        let has_entry_content = program.entry_expression.is_some()
-            || program
-                .declarations
-                .iter()
-                .any(|declaration| matches!(declaration.kind, DeclarationKind::Variable(_)));
-
-        if has_entry_content {
+        if program.entry_expression.is_some() {
             self.lower_entry_function(program)?;
         }
 
@@ -251,22 +246,20 @@ impl IRBuilder {
         let entry_name = "__entry".to_string();
 
         self.create_function(entry_name.clone(), Vec::new(), Some("i64".to_string()))?;
-        self.create_block_in_function(&entry_name, "entry")?;
-        self.set_current_block(entry_name.clone(), "entry")?;
-        self.push_scope();
 
-        for declaration in &program.declarations {
-            if let DeclarationKind::Variable(variable) = &declaration.kind {
-                self.lower_variable_declaration(variable)?;
-            }
-        }
+        self.create_block_in_function(&entry_name, "entry")?;
+
+        self.set_current_block(entry_name.clone(), "entry")?;
+
+        self.push_scope();
 
         match &program.entry_expression {
             Some(entry_expression) => {
                 let _ = self.lower_expr(entry_expression)?;
             }
+
             None => {
-                // No top-level entry expression: keep the wrapper valid and return 0.
+                // No top-level entry expression
             }
         }
 
@@ -277,6 +270,7 @@ impl IRBuilder {
         }
 
         self.pop_scope();
+
         Ok(())
     }
 
@@ -293,7 +287,7 @@ impl IRBuilder {
 
         self.create_function(
             function.name.clone(),
-            parameters,
+            parameters.clone(),
             function
                 .return_type
                 .as_ref()
@@ -304,9 +298,8 @@ impl IRBuilder {
         self.set_current_block(function.name.clone(), "entry")?;
         self.push_scope();
 
-        for parameter in &function.parameters {
-            let value_id = IRValueId::new(parameter.name.clone());
-            self.define_variable(&parameter.name, value_id);
+        for (ast_param, ir_param) in function.parameters.iter().zip(parameters.iter()) {
+            self.define_variable(&ast_param.name, ir_param.id.clone());
         }
 
         let body_value = self.lower_expr(&function.body)?;
@@ -339,25 +332,6 @@ impl IRBuilder {
         Ok(value)
     }
 
-    fn lower_variable_declaration(
-        &mut self,
-        variable: &VariableDeclaration,
-    ) -> Result<IRValueId, IRLoweringError> {
-        let value_id = match &variable.value {
-            Some(initializer) => self.lower_expr(initializer)?,
-            None => self.emit_constant_boolean(false, IRValueKind::Temporary)?,
-        };
-
-        let target = self.fresh_value();
-        self.emit(IRInstruction::new(IRInstructionKind::Assign {
-            target: target.clone(),
-            value: IROperand::Value(value_id.clone()),
-            original: None,
-        }))?;
-        self.define_variable(&variable.name, target.clone());
-        Ok(target)
-    }
-
     fn lower_expr(&mut self, expr: &Expr) -> Result<IRValueId, IRLoweringError> {
         match &expr.kind {
             ExprKind::Literal(literal) => self.lower_literal(literal),
@@ -373,7 +347,6 @@ impl IRBuilder {
                 operator,
                 right,
             } => self.lower_binary(left, operator, right, expr),
-            ExprKind::Grouping(inner) => self.lower_expr(inner),
             ExprKind::Block(expressions) => self.lower_block(expressions, expr),
             ExprKind::Call { callee, arguments } => self.lower_call(callee, arguments, expr),
             ExprKind::Assignment { target, value } => self.lower_assignment(target, value, expr),
@@ -393,10 +366,8 @@ impl IRBuilder {
                 name,
                 annotation,
                 value,
-            } => self.lower_let(name, annotation, value.as_deref(), expr),
-            ExprKind::Return(value) => self.lower_return(value.as_deref(), expr),
-            ExprKind::Break => self.lower_break(expr),
-            ExprKind::Continue => self.lower_continue(expr),
+                body,
+            } => self.lower_let(name, annotation, value, body, expr),
             ExprKind::MemberAccess { object, member } => {
                 self.lower_member_access(object, member, expr)
             }
@@ -414,7 +385,7 @@ impl IRBuilder {
                 arguments,
             } => self.lower_new(type_ref, arguments, expr),
             ExprKind::Self_ => self.lower_self(expr),
-            ExprKind::Base { member } => self.lower_base(member.as_deref(), expr),
+            ExprKind::Base => self.lower_base(expr),
             ExprKind::VectorLiteral(elements) => self.lower_vector_literal(elements, expr),
             ExprKind::VectorComprehension {
                 element_expr,
@@ -443,13 +414,11 @@ impl IRBuilder {
         let operand_value = self.lower_expr(operand)?;
 
         match operator {
-            UnaryOperator::Plus => Ok(operand_value),
             UnaryOperator::Minus | UnaryOperator::Not => {
                 let target = self.fresh_value();
                 let op = match operator {
                     UnaryOperator::Minus => IRUnaryOp::Neg,
                     UnaryOperator::Not => IRUnaryOp::Not,
-                    UnaryOperator::Plus => unreachable!(),
                 };
                 self.emit(IRInstruction::new(IRInstructionKind::Unary {
                     target: target.clone(),
@@ -475,98 +444,106 @@ impl IRBuilder {
 
         let target = self.fresh_value();
         let instruction = match operator {
-            BinaryOperator::Add => Some(IRInstructionKind::Binary {
+            BinaryOperator::Add => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Add,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::Subtract => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::Subtract => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Sub,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::Multiply => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::Multiply => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Mul,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::Divide => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::Divide => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Div,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::And => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::And => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::And,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::Or => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::Or => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Or,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::Equal => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::Equal => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Eq,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::NotEqual => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::NotEqual => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Ne,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::Less => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::Less => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Lt,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::LessEqual => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::LessEqual => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Le,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::Greater => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::Greater => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Gt,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::GreaterEqual => Some(IRInstructionKind::Binary {
+            },
+            BinaryOperator::GreaterEqual => IRInstructionKind::Binary {
                 target: target.clone(),
                 op: IRBinaryOp::Ge,
                 left: left_operand.clone(),
                 right: right_operand.clone(),
-            }),
-            BinaryOperator::Power => None,
-            BinaryOperator::Modulo => None,
-            BinaryOperator::Concat | BinaryOperator::Concatenate => None,
+            },
+            BinaryOperator::Power => IRInstructionKind::Binary {
+                target: target.clone(),
+                op: IRBinaryOp::Pow,
+                left: left_operand.clone(),
+                right: right_operand.clone(),
+            },
+            BinaryOperator::Modulo => IRInstructionKind::Binary {
+                target: target.clone(),
+                op: IRBinaryOp::Mod,
+                left: left_operand.clone(),
+                right: right_operand.clone(),
+            },
+            BinaryOperator::Concat => IRInstructionKind::Binary {
+                target: target.clone(),
+                op: IRBinaryOp::Concat,
+                left: left_operand.clone(),
+                right: right_operand.clone(),
+            },
+            BinaryOperator::Concatenate => IRInstructionKind::Binary {
+                target: target.clone(),
+                op: IRBinaryOp::Concatenate,
+                left: left_operand.clone(),
+                right: right_operand.clone(),
+            },
         };
 
-        match instruction {
-            Some(instruction) => {
-                self.emit(IRInstruction::new(instruction))?;
-                Ok(target)
-            }
-            None => {
-                let callee = match operator {
-                    BinaryOperator::Power => "pow",
-                    BinaryOperator::Modulo => "mod",
-                    BinaryOperator::Concat | BinaryOperator::Concatenate => "concat",
-                    _ => unreachable!(),
-                };
-                self.emit_call_with_values(callee, vec![left_value, right_value])
-            }
-        }
+        self.emit(IRInstruction::new(instruction))?;
+        Ok(target)
     }
 
     fn lower_block(
@@ -858,25 +835,33 @@ impl IRBuilder {
         &mut self,
         name: &str,
         annotation: &Option<TypeReference>,
-        value: Option<&Expr>,
+        value: &Expr,
+        body: &Expr,
         _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
-        let value_id = match value {
-            Some(inner) => self.lower_expr(inner)?,
-            None => self.emit_constant_boolean(false, IRValueKind::Temporary)?,
-        };
-
+        let value_id = self.lower_expr(value)?;
         let target = self.fresh_value();
         let mut target_value = IRValue::new(target.0.clone(), IRValueKind::Temporary);
-        target_value.ty = annotation.as_ref().map(|type_ref| type_ref.display_name());
+
+        target_value.ty = annotation.as_ref().map(|t| t.display_name());
+
         self.emit(IRInstruction::new(IRInstructionKind::Assign {
             target: target.clone(),
+
             value: IROperand::Value(value_id),
+
             original: None,
         }))?;
+
+        self.scopes.push(HashMap::new());
+
         self.define_variable(name, target.clone());
 
-        Ok(target)
+        let body_result = self.lower_expr(body);
+
+        self.scopes.pop();
+
+        body_result
     }
 
     fn lower_return(
@@ -986,14 +971,8 @@ impl IRBuilder {
         })
     }
 
-    fn lower_base(
-        &mut self,
-        member: Option<&str>,
-        _expr: &Expr,
-    ) -> Result<IRValueId, IRLoweringError> {
-        let base_name = member
-            .map(|name| format!("base.{}", name))
-            .unwrap_or_else(|| "base".to_string());
+    fn lower_base(&mut self, _expr: &Expr) -> Result<IRValueId, IRLoweringError> {
+        let base_name = "base".to_string();
         self.emit_call_with_values(&base_name, Vec::new())
     }
 

@@ -180,13 +180,15 @@ fn place_phi_nodes(function: &mut crate::ir::module::IRFunction) {
                     if !has_phi.contains(y) {
                         // insert phi in block y
                         if let Some(block_mut) = function.block_mut(y) {
+                            // Placeholder incoming values.
+                            // The SSA renaming phase will replace these
+                            // with the correct SSA versions.
                             let incoming = block_mut
                                 .predecessors
                                 .iter()
                                 .map(|p| (IRValueId::new(var.clone()), p.clone()))
                                 .collect();
-                            let phi_target =
-                                crate::ir::value::IRValueId::new("%phi".to_string() + &y.0);
+                            let phi_target = IRValueId::new(format!("%phi_{}_{}", var, y.0));
                             let phi_instr = IRInstruction::new(IRInstructionKind::Phi {
                                 target: phi_target.clone(),
                                 incoming,
@@ -205,25 +207,22 @@ fn place_phi_nodes(function: &mut crate::ir::module::IRFunction) {
     }
 }
 
-fn remap_operand(
-    op: &IROperand,
-    map: &mut HashMap<String, String>,
-    svgen: &mut SSAValueGenerator,
-) -> IROperand {
+fn remap_operand(op: &IROperand, map: &HashMap<String, String>) -> IROperand {
     match op {
         IROperand::Value(id) => {
             if let Some(new) = map.get(&id.0) {
                 IROperand::Value(IRValueId::new(new.clone()))
             } else {
-                // assign a new name for referenced-but-unseen value
-                let new_name = svgen.next_value();
-                map.insert(id.0.clone(), new_name.clone());
-                IROperand::Value(IRValueId::new(new_name))
+                panic!("SSA renaming: undefined value '{}'", id.0);
             }
         }
+
         IROperand::Integer(i) => IROperand::Integer(*i),
+
         IROperand::Float(f) => IROperand::Float(*f),
+
         IROperand::Boolean(b) => IROperand::Boolean(*b),
+
         IROperand::Text(s) => IROperand::Text(s.clone()),
     }
 }
@@ -249,14 +248,14 @@ fn renaming_for_function(function: &mut IRFunction) {
                     value,
                     original: _,
                 } => {
-                    *value = remap_operand(value, &mut map, &mut svgen);
+                    *value = remap_operand(value, &map);
                 }
                 IRInstructionKind::Binary { left, right, .. } => {
-                    *left = remap_operand(left, &mut map, &mut svgen);
-                    *right = remap_operand(right, &mut map, &mut svgen);
+                    *left = remap_operand(left, &map);
+                    *right = remap_operand(right, &map);
                 }
                 IRInstructionKind::Unary { operand, .. } => {
-                    *operand = remap_operand(operand, &mut map, &mut svgen);
+                    *operand = remap_operand(operand, &mut map);
                 }
                 IRInstructionKind::Phi { incoming, .. } => {
                     for (v, _b) in incoming.iter_mut() {
@@ -270,10 +269,10 @@ fn renaming_for_function(function: &mut IRFunction) {
                     }
                 }
                 IRInstructionKind::Branch { condition, .. } => {
-                    *condition = remap_operand(condition, &mut map, &mut svgen);
+                    *condition = remap_operand(condition, &mut map);
                 }
                 IRInstructionKind::Return(Some(op)) => {
-                    *op = remap_operand(op, &mut map, &mut svgen);
+                    *op = remap_operand(op, &mut map);
                 }
                 IRInstructionKind::Return(None) => {}
                 IRInstructionKind::Call {
@@ -283,7 +282,7 @@ fn renaming_for_function(function: &mut IRFunction) {
                     ..
                 } => {
                     for arg in arguments.iter_mut() {
-                        *arg = remap_operand(arg, &mut map, &mut svgen);
+                        *arg = remap_operand(arg, &mut map);
                     }
                 }
                 _ => {}

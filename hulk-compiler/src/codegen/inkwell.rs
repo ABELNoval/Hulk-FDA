@@ -82,7 +82,7 @@ mod real {
         let bool_t = ctx.bool_type();
 
         let Some(raw) = ty.map(str::trim).filter(|s| !s.is_empty()) else {
-            return Some(i64_t.into());
+            return Some(f64_t.into());
         };
 
         match raw.to_ascii_lowercase().as_str() {
@@ -130,20 +130,20 @@ mod real {
     ) -> CodegenResult<BasicValueEnum<'ctx>> {
         Ok(match operand {
             crate::ir::IROperand::Integer(value) => {
+                println!("WARNING: Integer operand encontrado -> {}", value);
+
                 ctx.i64_type().const_int(*value as u64, true).into()
             }
             crate::ir::IROperand::Float(value) => ctx.f64_type().const_float(*value).into(),
             crate::ir::IROperand::Boolean(value) => {
                 ctx.bool_type().const_int(u64::from(*value), false).into()
             }
-            crate::ir::IROperand::Text(text) => {
-                builder
-                    .build_global_string_ptr(text, "strlit")
-                    .map(|global| global.as_pointer_value().into())
-                    .map_err(|err| CodegenError::BackendFailure {
-                        message: format!("failed to emit string literal: {:?}", err),
-                    })?
-            }
+            crate::ir::IROperand::Text(text) => builder
+                .build_global_string_ptr(text, "strlit")
+                .map(|global| global.as_pointer_value().into())
+                .map_err(|err| CodegenError::BackendFailure {
+                    message: format!("failed to emit string literal: {:?}", err),
+                })?,
             crate::ir::IROperand::Value(value_id) => {
                 let raw_key = value_id.0.as_str();
                 let trimmed_key = raw_key.trim_start_matches('%');
@@ -163,7 +163,9 @@ mod real {
                         }
                     })?
                 } else {
-                    ctx.i64_type().const_zero().into()
+                    return Err(CodegenError::BackendFailure {
+                        message: format!("value '{}' not found in allocas", value_id.0),
+                    });
                 }
             }
         })
@@ -176,7 +178,7 @@ mod real {
     ) -> inkwell::types::FunctionType<'ctx> {
         let metadata_params = basic_metadata_types(parameter_types);
         match return_type.map(str::trim).filter(|s| !s.is_empty()) {
-            None => ctx.i64_type().fn_type(&metadata_params, false),
+            None => ctx.f64_type().fn_type(&metadata_params, false),
             Some("void") => ctx.void_type().fn_type(&metadata_params, false),
             Some(ret) => match map_type(ctx, Some(ret)) {
                 Some(BasicTypeEnum::IntType(int_ty)) => int_ty.fn_type(&metadata_params, false),
@@ -254,7 +256,7 @@ mod real {
                     .or_else(|| allocas.get(trimmed_key))
                     .or_else(|| allocas.get(prefixed_key.as_str()))
                     .map(|(_, ty)| *ty)
-                    .unwrap_or_else(|| ctx.i64_type().into())
+                    .unwrap_or_else(|| ctx.f64_type().into())
             }
         }
     }
@@ -313,7 +315,7 @@ mod real {
                                     crate::ir::IROperand::Float(_) => "double".to_string(),
                                     crate::ir::IROperand::Boolean(_) => "i1".to_string(),
                                     crate::ir::IROperand::Text(_) => "ptr".to_string(),
-                                    _ => "i64".to_string(),
+                                    _ => "double".to_string(),
                                 })
                                 .collect::<Vec<_>>();
                             let ret = if params.iter().any(|p| p == "double") {
@@ -332,7 +334,7 @@ mod real {
             for (name, (ret, params)) in &extern_prototypes {
                 let param_types: Vec<BasicTypeEnum> = params
                     .iter()
-                    .map(|p| map_type(&ctx, Some(p)).unwrap_or_else(|| ctx.i64_type().into()))
+                    .map(|p| map_type(&ctx, Some(p)).unwrap_or_else(|| ctx.f64_type().into()))
                     .collect();
                 let fn_type = function_type_for(&ctx, Some(ret.as_str()), &param_types);
                 let _ = llvm_mod.add_function(name, fn_type, None);
@@ -343,7 +345,7 @@ mod real {
                     .parameters
                     .iter()
                     .map(|p| {
-                        map_type(&ctx, p.ty.as_deref()).unwrap_or_else(|| ctx.i64_type().into())
+                        map_type(&ctx, p.ty.as_deref()).unwrap_or_else(|| ctx.f64_type().into())
                     })
                     .collect();
                 let fn_type =
@@ -414,10 +416,11 @@ mod real {
                                 ));
                             }
 
-                            let first_operand = incoming
-                                .first()
-                                .map(|(value_id, _)| crate::ir::IROperand::Value(value_id.clone()))
-                                .unwrap_or(crate::ir::IROperand::Integer(0));
+                            let first_operand = if let Some((value_id, _)) = incoming.first() {
+                                crate::ir::IROperand::Value(value_id.clone())
+                            } else {
+                                unreachable!("phi incoming cannot be empty");
+                            };
                             let phi_ty = infer_operand_type(&ctx, &allocas, &first_operand);
                             let phi = builder
                                 .build_phi(phi_ty, target.0.trim_start_matches('%'))
@@ -512,103 +515,61 @@ mod real {
                             } => {
                                 let l = lower_operand(&ctx, &builder, &allocas, left)?;
                                 let r = lower_operand(&ctx, &builder, &allocas, right)?;
-                                let use_float_ops =
-                                    matches!(l.get_type(), BasicTypeEnum::FloatType(_))
-                                        || matches!(r.get_type(), BasicTypeEnum::FloatType(_));
+                                let both_bool = matches!(l.get_type(), BasicTypeEnum::IntType(_))
+                                    && matches!(r.get_type(), BasicTypeEnum::IntType(_));
+                                println!(
+                                    "OP={:?}  left={}  right={}",
+                                    op,
+                                    l.get_type().print_to_string().to_string(),
+                                    r.get_type().print_to_string().to_string()
+                                );
+
                                 let res = match op {
-                                    crate::ir::IRBinaryOp::Add => {
-                                        if use_float_ops {
-                                            builder
-                                                .build_float_add(
-                                                    l.into_float_value(),
-                                                    r.into_float_value(),
-                                                    "tmpadd",
-                                                )
-                                                .map(BasicValueEnum::from)
-                                        } else {
-                                            builder
-                                                .build_int_add(
-                                                    l.into_int_value(),
-                                                    r.into_int_value(),
-                                                    "tmpadd",
-                                                )
-                                                .map(BasicValueEnum::from)
-                                        }
-                                    }
-                                    crate::ir::IRBinaryOp::Sub => {
-                                        if use_float_ops {
-                                            builder
-                                                .build_float_sub(
-                                                    l.into_float_value(),
-                                                    r.into_float_value(),
-                                                    "tmpsub",
-                                                )
-                                                .map(BasicValueEnum::from)
-                                        } else {
-                                            builder
-                                                .build_int_sub(
-                                                    l.into_int_value(),
-                                                    r.into_int_value(),
-                                                    "tmpsub",
-                                                )
-                                                .map(BasicValueEnum::from)
-                                        }
-                                    }
-                                    crate::ir::IRBinaryOp::Mul => {
-                                        if use_float_ops {
-                                            builder
-                                                .build_float_mul(
-                                                    l.into_float_value(),
-                                                    r.into_float_value(),
-                                                    "tmpmul",
-                                                )
-                                                .map(BasicValueEnum::from)
-                                        } else {
-                                            builder
-                                                .build_int_mul(
-                                                    l.into_int_value(),
-                                                    r.into_int_value(),
-                                                    "tmpmul",
-                                                )
-                                                .map(BasicValueEnum::from)
-                                        }
-                                    }
-                                    crate::ir::IRBinaryOp::Div => {
-                                        if use_float_ops {
-                                            builder
-                                                .build_float_div(
-                                                    l.into_float_value(),
-                                                    r.into_float_value(),
-                                                    "tmpdiv",
-                                                )
-                                                .map(BasicValueEnum::from)
-                                        } else {
-                                            builder
-                                                .build_int_signed_div(
-                                                    l.into_int_value(),
-                                                    r.into_int_value(),
-                                                    "tmpdiv",
-                                                )
-                                                .map(BasicValueEnum::from)
-                                        }
-                                    }
+                                    // ===== Operaciones numéricas =====
+                                    crate::ir::IRBinaryOp::Add => builder
+                                        .build_float_add(
+                                            l.into_float_value(),
+                                            r.into_float_value(),
+                                            "tmpadd",
+                                        )
+                                        .map(BasicValueEnum::from),
+
+                                    crate::ir::IRBinaryOp::Sub => builder
+                                        .build_float_sub(
+                                            l.into_float_value(),
+                                            r.into_float_value(),
+                                            "tmpsub",
+                                        )
+                                        .map(BasicValueEnum::from),
+
+                                    crate::ir::IRBinaryOp::Mul => builder
+                                        .build_float_mul(
+                                            l.into_float_value(),
+                                            r.into_float_value(),
+                                            "tmpmul",
+                                        )
+                                        .map(BasicValueEnum::from),
+
+                                    crate::ir::IRBinaryOp::Div => builder
+                                        .build_float_div(
+                                            l.into_float_value(),
+                                            r.into_float_value(),
+                                            "tmpdiv",
+                                        )
+                                        .map(BasicValueEnum::from),
+
+                                    // ===== Booleanos =====
                                     crate::ir::IRBinaryOp::And => builder
                                         .build_and(l.into_int_value(), r.into_int_value(), "tmpand")
                                         .map(BasicValueEnum::from),
+
                                     crate::ir::IRBinaryOp::Or => builder
                                         .build_or(l.into_int_value(), r.into_int_value(), "tmpor")
                                         .map(BasicValueEnum::from),
+
+                                    // ===== Comparaciones =====
                                     crate::ir::IRBinaryOp::Eq => {
-                                        if use_float_ops {
-                                            builder
-                                                .build_float_compare(
-                                                    FloatPredicate::OEQ,
-                                                    l.into_float_value(),
-                                                    r.into_float_value(),
-                                                    "tmpeq",
-                                                )
-                                                .map(BasicValueEnum::from)
-                                        } else {
+                                        if both_bool {
                                             builder
                                                 .build_int_compare(
                                                     IntPredicate::EQ,
@@ -617,19 +578,20 @@ mod real {
                                                     "tmpeq",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        }
-                                    }
-                                    crate::ir::IRBinaryOp::Ne => {
-                                        if use_float_ops {
+                                        } else {
                                             builder
                                                 .build_float_compare(
-                                                    FloatPredicate::ONE,
+                                                    FloatPredicate::OEQ,
                                                     l.into_float_value(),
                                                     r.into_float_value(),
-                                                    "tmpne",
+                                                    "tmpeq",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        } else {
+                                        }
+                                    }
+
+                                    crate::ir::IRBinaryOp::Ne => {
+                                        if both_bool {
                                             builder
                                                 .build_int_compare(
                                                     IntPredicate::NE,
@@ -638,19 +600,20 @@ mod real {
                                                     "tmpne",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        }
-                                    }
-                                    crate::ir::IRBinaryOp::Lt => {
-                                        if use_float_ops {
+                                        } else {
                                             builder
                                                 .build_float_compare(
-                                                    FloatPredicate::OLT,
+                                                    FloatPredicate::ONE,
                                                     l.into_float_value(),
                                                     r.into_float_value(),
-                                                    "tmplt",
+                                                    "tmpne",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        } else {
+                                        }
+                                    }
+
+                                    crate::ir::IRBinaryOp::Lt => {
+                                        if both_bool {
                                             builder
                                                 .build_int_compare(
                                                     IntPredicate::SLT,
@@ -659,19 +622,20 @@ mod real {
                                                     "tmplt",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        }
-                                    }
-                                    crate::ir::IRBinaryOp::Le => {
-                                        if use_float_ops {
+                                        } else {
                                             builder
                                                 .build_float_compare(
-                                                    FloatPredicate::OLE,
+                                                    FloatPredicate::OLT,
                                                     l.into_float_value(),
                                                     r.into_float_value(),
-                                                    "tmple",
+                                                    "tmplt",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        } else {
+                                        }
+                                    }
+
+                                    crate::ir::IRBinaryOp::Le => {
+                                        if both_bool {
                                             builder
                                                 .build_int_compare(
                                                     IntPredicate::SLE,
@@ -680,19 +644,20 @@ mod real {
                                                     "tmple",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        }
-                                    }
-                                    crate::ir::IRBinaryOp::Gt => {
-                                        if use_float_ops {
+                                        } else {
                                             builder
                                                 .build_float_compare(
-                                                    FloatPredicate::OGT,
+                                                    FloatPredicate::OLE,
                                                     l.into_float_value(),
                                                     r.into_float_value(),
-                                                    "tmpgt",
+                                                    "tmple",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        } else {
+                                        }
+                                    }
+
+                                    crate::ir::IRBinaryOp::Gt => {
+                                        if both_bool {
                                             builder
                                                 .build_int_compare(
                                                     IntPredicate::SGT,
@@ -701,19 +666,20 @@ mod real {
                                                     "tmpgt",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        }
-                                    }
-                                    crate::ir::IRBinaryOp::Ge => {
-                                        if use_float_ops {
+                                        } else {
                                             builder
                                                 .build_float_compare(
-                                                    FloatPredicate::OGE,
+                                                    FloatPredicate::OGT,
                                                     l.into_float_value(),
                                                     r.into_float_value(),
-                                                    "tmpge",
+                                                    "tmpgt",
                                                 )
                                                 .map(BasicValueEnum::from)
-                                        } else {
+                                        }
+                                    }
+
+                                    crate::ir::IRBinaryOp::Ge => {
+                                        if both_bool {
                                             builder
                                                 .build_int_compare(
                                                     IntPredicate::SGE,
@@ -722,8 +688,50 @@ mod real {
                                                     "tmpge",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                        } else {
+                                            builder
+                                                .build_float_compare(
+                                                    FloatPredicate::OGE,
+                                                    l.into_float_value(),
+                                                    r.into_float_value(),
+                                                    "tmpge",
+                                                )
+                                                .map(BasicValueEnum::from)
                                         }
                                     }
+
+                                    crate::ir::IRBinaryOp::Mod => builder
+                                        .build_float_rem(
+                                            l.into_float_value(),
+                                            r.into_float_value(),
+                                            "tmpmod",
+                                        )
+                                        .map(BasicValueEnum::from),
+
+                                    crate::ir::IRBinaryOp::Pow => {
+                                        let pow_fn = match llvm_mod.get_function("pow") {
+                                            Some(f) => f,
+
+                                            None => {
+                                                let sig = ctx.f64_type().fn_type(
+                                                    &[ctx.f64_type().into(), ctx.f64_type().into()],
+                                                    false,
+                                                );
+
+                                                llvm_mod.add_function("pow", sig, None)
+                                            }
+                                        };
+                                        builder
+                                            .build_call(pow_fn, &[l.into(), r.into()], "tmppow")
+                                            .map(|call| call.try_as_basic_value().basic().unwrap())
+                                    }
+                                    crate::ir::IRBinaryOp::Concat => Ok(BasicValueEnum::from(
+                                        ctx.ptr_type(AddressSpace::default()).const_null(),
+                                    )),
+
+                                    crate::ir::IRBinaryOp::Concatenate => Ok(BasicValueEnum::from(
+                                        ctx.ptr_type(AddressSpace::default()).const_null(),
+                                    )),
                                 };
                                 let res = res.map_err(|err| CodegenError::BackendFailure {
                                     message: format!("failed to emit binary op: {:?}", err),
@@ -747,13 +755,15 @@ mod real {
                                 ..
                             } => {
                                 if callee == "print" {
+                                    if target.is_some() {
+                                        return emit_backend_failure("print cannot have a target");
+                                    }
                                     let print_fn = match llvm_mod.get_function("print") {
                                         Some(f) => f,
                                         None => {
-                                            let sig = ctx.void_type().fn_type(
-                                                &[ctx.f64_type().into()],
-                                                false,
-                                            );
+                                            let sig = ctx
+                                                .void_type()
+                                                .fn_type(&[ctx.f64_type().into()], false);
                                             llvm_mod.add_function("print", sig, None)
                                         }
                                     };
@@ -773,34 +783,14 @@ mod real {
                                                 err
                                             ),
                                         })?;
-                                    if let Some(t) = target {
-                                        if let Some(first_arg) = argsv.first().copied() {
-                                            let name = t.0.trim_start_matches('%');
-                                            let ptr = ensure_slot(
-                                                &builder,
-                                                name,
-                                                first_arg.get_type(),
-                                                &mut allocas,
-                                            )?;
-                                            builder.build_store(ptr, first_arg).map_err(|err| {
-                                                CodegenError::BackendFailure {
-                                                    message: format!(
-                                                        "failed to store print result: {:?}",
-                                                        err
-                                                    ),
-                                                }
-                                            })?;
-                                        }
-                                    }
                                     continue;
                                 }
-                                let callee_fn = match llvm_mod.get_function(callee.as_str()) {
-                                    Some(f) => f,
-                                    None => {
-                                        let sig = ctx.i64_type().fn_type(&[], false);
-                                        llvm_mod.add_function(callee.as_str(), sig, None)
-                                    }
-                                };
+                                let callee_fn =
+                                    llvm_mod.get_function(callee.as_str()).ok_or_else(|| {
+                                        CodegenError::BackendFailure {
+                                            message: format!("unknown function '{}'", callee),
+                                        }
+                                    })?;
                                 let argsv: Vec<BasicValueEnum> = arguments
                                     .iter()
                                     .map(|a| lower_operand(&ctx, &builder, &allocas, a))

@@ -20,6 +20,10 @@ pub enum IRBinaryOp {
     Le,
     Gt,
     Ge,
+    Mod,
+    Pow,
+    Concat,
+    Concatenate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,33 +146,14 @@ impl IRInstruction {
             } => {
                 vals.push(id.clone());
             }
-            IRInstructionKind::Binary {
-                left: IROperand::Value(l),
-                right: IROperand::Value(r),
-                ..
-            } => {
-                vals.push(l.clone());
-                vals.push(r.clone());
-            }
-            IRInstructionKind::Binary {
-                left: IROperand::Value(l),
-                right,
-                ..
-            } => {
-                vals.push(l.clone());
-                if let IROperand::Value(r) = right {
-                    vals.push(r.clone());
-                }
-            }
-            IRInstructionKind::Binary {
-                left,
-                right: IROperand::Value(r),
-                ..
-            } => {
+            IRInstructionKind::Binary { left, right, .. } => {
                 if let IROperand::Value(l) = left {
                     vals.push(l.clone());
                 }
-                vals.push(r.clone());
+
+                if let IROperand::Value(r) = right {
+                    vals.push(r.clone());
+                }
             }
             IRInstructionKind::Unary {
                 operand: IROperand::Value(o),
@@ -238,14 +223,6 @@ impl IRInstruction {
 
     pub fn is_nop(&self) -> bool {
         matches!(&self.kind, IRInstructionKind::Nop)
-    }
-
-    pub fn target_block(&self) -> Option<&BasicBlockId> {
-        match &self.kind {
-            IRInstructionKind::Jump { target } => Some(target),
-            IRInstructionKind::Branch { then_block, .. } => Some(then_block),
-            _ => None,
-        }
     }
 
     pub fn successor_blocks(&self) -> Vec<&BasicBlockId> {
@@ -345,6 +322,10 @@ impl IRInstruction {
                     IRBinaryOp::Sub => "-",
                     IRBinaryOp::Mul => "*",
                     IRBinaryOp::Div => "/",
+                    IRBinaryOp::Mod => "%",
+                    IRBinaryOp::Pow => "^",
+                    IRBinaryOp::Concat => "@",
+                    IRBinaryOp::Concatenate => "@@",
                     IRBinaryOp::And => "&&",
                     IRBinaryOp::Or => "||",
                     IRBinaryOp::Eq => "==",

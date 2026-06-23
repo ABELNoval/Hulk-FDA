@@ -576,6 +576,27 @@ impl IRBuilder {
         _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let callee_name = self.resolve_callee(callee)?;
+
+        let argument_values = arguments
+            .iter()
+            .map(|argument| self.lower_expr(argument))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if callee_name == "print" {
+            self.emit(IRInstruction::new(IRInstructionKind::Call {
+                target: None,
+
+                callee: callee_name,
+
+                arguments: argument_values.into_iter().map(IROperand::Value).collect(),
+
+                original: None,
+            }))?;
+
+            return Ok(self.fresh_value());
+        }
+
+        let callee_name = self.resolve_callee(callee)?;
         let argument_values = arguments
             .iter()
             .map(|argument| self.lower_expr(argument))

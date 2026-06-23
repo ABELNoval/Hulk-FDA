@@ -741,6 +741,19 @@ impl Parser {
             return expr;
         }
 
+        // Reconocer estructuras de control como subexpresiones
+        if self.cursor.check(&TokenType::Let) {
+            return self.parse_let_binding();
+        } else if self.cursor.check(&TokenType::If) {
+            return self.parse_if_expr();
+        } else if self.cursor.check(&TokenType::While) {
+            return self.parse_while_expr();
+        } else if self.cursor.check(&TokenType::For) {
+            return self.parse_for_expr();
+        } else if self.cursor.check(&TokenType::LeftBrace) {
+            return self.parse_block();
+        }
+
         let token = self.cursor.advance();
         let span = token.span.clone();
 

@@ -153,13 +153,14 @@ impl TypeReference {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expr {
+    pub id: usize,
     pub kind: ExprKind,
     pub span: Span,
 }
 
 impl Expr {
     pub fn new(kind: ExprKind, span: Span) -> Self {
-        Self { kind, span }
+        Self { kind, span, id: 0 }
     }
 
     pub fn literal(literal: Literal, span: Span) -> Self {

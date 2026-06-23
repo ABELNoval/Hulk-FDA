@@ -86,7 +86,7 @@ pub enum IRInstructionKind {
     },
     Return(Option<IROperand>),
     Call {
-        target: Option<IRValueId>,
+        target: IRValueId,
         callee: String,
         arguments: Vec<IROperand>,
         original: Option<String>,
@@ -104,17 +104,14 @@ impl IRInstruction {
         Self { kind }
     }
 
-    pub fn defines_value(&self) -> Option<&IRValueId> {
+    pub fn defines_value(&self) -> &IRValueId {
         match &self.kind {
             IRInstructionKind::Assign { target, .. }
             | IRInstructionKind::Binary { target, .. }
             | IRInstructionKind::Unary { target, .. }
-            | IRInstructionKind::Phi { target, .. } => Some(target),
-            IRInstructionKind::Call {
-                target: Some(target),
-                ..
-            } => Some(target),
-            _ => None,
+            | IRInstructionKind::Phi { target, .. } => target,
+            IRInstructionKind::Call { target, .. } => target,
+            _ => panic!("Instruction does not define a value"),
         }
     }
 
@@ -396,10 +393,7 @@ impl IRInstruction {
                     .map(|arg| arg.fmt_display())
                     .collect::<Vec<_>>()
                     .join(", ");
-                match target {
-                    Some(t) => format!("{} = call {}({})", t.0, callee, args),
-                    None => format!("call {}({})", callee, args),
-                }
+                format!("{} = call {}({})", target.0, callee, args)
             }
             IRInstructionKind::Nop => "nop".to_string(),
         }

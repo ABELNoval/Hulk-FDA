@@ -100,7 +100,11 @@ impl CompilationPipeline {
             });
         }
 
-        self.semantic(&program)?;
+        // Run semantic analysis here and keep the resulting expr_types
+        let mut analyzer = SemanticAnalyzer::new();
+        analyzer
+            .analyze(&program)
+            .map_err(CompilationError::semantic)?;
 
         if stage == PipelineStage::Semantic {
             return Ok(PipelineReport {
@@ -112,8 +116,13 @@ impl CompilationPipeline {
             });
         }
 
-        let mut ir = self.ir(&program)?;
-        println!("{:#?}", ir);
+        // Build IR, injecting semantic expression types so lowering can rely on
+        // previously-computed types (used e.g. by print lowering).
+        let mut builder = IRBuilder::new("lowered");
+        builder.set_expr_types(analyzer.context().expr_types.clone());
+        let mut ir = builder
+            .lower_program(&program)
+            .map_err(|error| CompilationError::internal(error.to_string()))?;
         run_ssa_renaming(&mut ir);
 
         if stage == PipelineStage::Ir {

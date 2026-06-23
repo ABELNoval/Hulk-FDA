@@ -39,6 +39,8 @@ pub struct SemanticContext {
     pub types: TypeEnvironment,
     /// Checker de tipos de expresiones
     pub expression_checker: ExpressionChecker,
+    // Tabla paralela que mapea Expr.id
+    pub expr_types: std::collections::HashMap<usize, NormalizedType>,
     /// Errores semánticos encontrados
     pub errors: Vec<SemanticError>,
 }
@@ -49,6 +51,7 @@ impl SemanticContext {
             symbols: SymbolTable::new(),
             types: TypeEnvironment::new(),
             expression_checker: ExpressionChecker::new(),
+            expr_types: std::collections::HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -94,6 +97,9 @@ pub struct SemanticAnalyzer {
     /// argument type vectors (each call's argument types).
     current_inferred_signatures:
         Option<std::collections::HashMap<String, Vec<Vec<NormalizedType>>>>,
+    /// Observed call signatures across the whole program (useful to infer
+    /// parameter types from top-level calls before analyzing function bodies)
+    observed_call_signatures: std::collections::HashMap<String, Vec<Vec<NormalizedType>>>,
 }
 
 impl SemanticAnalyzer {
@@ -105,6 +111,7 @@ impl SemanticAnalyzer {
         Self {
             context,
             current_inferred_signatures: None,
+            observed_call_signatures: std::collections::HashMap::new(),
         }
     }
 
@@ -263,17 +270,32 @@ impl SemanticAnalyzer {
 
         // Third pass: analyze function bodies with parameter scopes so that
         // parameters annotated with types/protocols are available during body analysis.
+        // Collect call signatures from top-level entry expression to help inference.
+        let initial_errors = self.context.errors.len();
+        let _ = self.check_entry_expression(_program);
+        self.context.errors.truncate(initial_errors);
+
         for decl in &_program.declarations {
             if let DeclarationKind::Function(func) = &decl.kind {
                 self.context.symbols.enter_scope();
 
                 // declare parameters as Parameter symbols with their annotations
-                for p in &func.parameters {
+                for (i, p) in func.parameters.iter().enumerate() {
                     let normalized_type = match &p.annotation {
                         Some(annotation) => {
                             self.context.types.validate_type_reference(annotation)?
                         }
-                        None => NormalizedType::Unknown,
+                        None => {
+                            if let Some(sigs) = self.observed_call_signatures.get(&func.name) {
+                                if !sigs.is_empty() && sigs[0].len() > i {
+                                    sigs[0][i].clone()
+                                } else {
+                                    NormalizedType::Unknown
+                                }
+                            } else {
+                                NormalizedType::Unknown
+                            }
+                        }
                     };
                     let param_sym = crate::semantic::symbol_table::SymbolInfo::Parameter {
                         name: p.name.clone(),
@@ -317,11 +339,23 @@ impl SemanticAnalyzer {
                         }
                         Err(e) => self.report_error(e),
                     }
+                } else if body_t != NormalizedType::Unknown {
+                    if let Err(e) = self
+                        .context
+                        .symbols
+                        .update_function_return_type(&func.name, body_t.clone())
+                    {
+                        self.report_error(e);
+                    }
                 }
 
                 self.context.symbols.exit_scope();
             }
         }
+
+        // Analyze entry expression after function body inference so inferred
+        // return types are available for top-level calls.
+        self.check_entry_expression(_program)?;
 
         Ok(())
     }
@@ -340,7 +374,7 @@ impl SemanticAnalyzer {
     /// Basic recursive expression analyzer that uses `ExpressionChecker` and
     /// available symbol/type information to validate common constructs.
     fn analyze_expr(&mut self, expr: &Expr) -> Result<NormalizedType, SemanticError> {
-        match &expr.kind {
+        let ty = match &expr.kind {
             ExprKind::Literal(literal) => {
                 let et = self.context.expression_checker.check_literal(literal)?;
 
@@ -390,6 +424,12 @@ impl SemanticAnalyzer {
                     for arg in arguments {
                         arg_types.push(self.analyze_expr(arg)?);
                     }
+
+                    // record observed call signature for potential inference
+                    self.observed_call_signatures
+                        .entry(name.clone())
+                        .or_insert_with(Vec::new)
+                        .push(arg_types.clone());
 
                     // 2. Construir la firma esperada
                     let mut expected_params: Option<Vec<(String, NormalizedType)>> = None;
@@ -548,7 +588,6 @@ impl SemanticAnalyzer {
                 else_expr,
             } => {
                 let cond_t = self.analyze_expr(condition)?;
-                println!("IF -> {:?}", cond_t);
 
                 let then_t = self.analyze_expr(then_expr)?;
 
@@ -645,7 +684,13 @@ impl SemanticAnalyzer {
                 }
             }
             _ => Ok(NormalizedType::Unknown),
+        };
+        if let Ok(ref resolved_type) = ty {
+            self.context
+                .expr_types
+                .insert(expr.id, resolved_type.clone());
         }
+        ty
     }
 
     /// Retorna todos los errores encontrados

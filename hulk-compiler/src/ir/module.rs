@@ -75,22 +75,29 @@ impl IRFunction {
             }
 
             for instruction in &block.instructions {
-                if let Some(target) = instruction.defines_value()
-                    && !defined_values.insert(target.0.clone())
-                {
-                    errors.push(format!(
-                        "Function '{}' defines SSA value '{}' more than once.",
-                        self.name, target.0
-                    ));
+                match &instruction.kind {
+                    IRInstructionKind::Assign { target, .. }
+                    | IRInstructionKind::Binary { target, .. }
+                    | IRInstructionKind::Unary { target, .. }
+                    | IRInstructionKind::Phi { target, .. }
+                    | IRInstructionKind::Call { target, .. } => {
+                        if !defined_values.insert(target.0.clone()) {
+                            errors.push(format!(
+                                "Function '{}' defines SSA value '{}' more than once.",
+                                self.name, target.0
+                            ));
+                        }
+                    }
+                    _ => {}
                 }
 
-                if let IRInstructionKind::Phi { .. } = instruction.kind
-                    && let Err(message) = instruction.validate_phi()
-                {
-                    errors.push(format!(
-                        "Function '{}' block '{}': {}",
-                        self.name, block.id.0, message
-                    ));
+                if let IRInstructionKind::Phi { .. } = &instruction.kind {
+                    if let Err(message) = instruction.validate_phi() {
+                        errors.push(format!(
+                            "Function '{}' block '{}': {}",
+                            self.name, block.id.0, message
+                        ));
+                    }
                 }
             }
 
@@ -115,8 +122,15 @@ impl IRFunction {
             }
             for block in &self.blocks {
                 for instr in &block.instructions {
-                    if let Some(target) = instr.defines_value() {
-                        def_map.insert(target.0.clone(), block.id.clone());
+                    match &instr.kind {
+                        IRInstructionKind::Assign { target, .. }
+                        | IRInstructionKind::Binary { target, .. }
+                        | IRInstructionKind::Unary { target, .. }
+                        | IRInstructionKind::Phi { target, .. }
+                        | IRInstructionKind::Call { target, .. } => {
+                            def_map.insert(target.0.clone(), block.id.clone());
+                        }
+                        _ => {}
                     }
                 }
             }

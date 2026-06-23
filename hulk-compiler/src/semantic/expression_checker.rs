@@ -84,13 +84,6 @@ impl ExpressionChecker {
         right_type: &NormalizedType,
         environment: &TypeEnvironment,
     ) -> SemanticResult<ExpressionType> {
-        if left_type.is_print_result() || right_type.is_print_result() {
-            return Err(SemanticError::InvalidOperandType {
-                expected: "value".into(),
-                found: "PrintResult".into(),
-                context: "binary operation".into(),
-            });
-        }
         let result_type = match op {
             BinaryOperator::Add
             | BinaryOperator::Subtract
@@ -98,8 +91,10 @@ impl ExpressionChecker {
             | BinaryOperator::Divide
             | BinaryOperator::Modulo
             | BinaryOperator::Power => {
-                // Aritmética: requiere Number
-                if left_type == &NormalizedType::Number && right_type == &NormalizedType::Number {
+                // Aritmética: requiere Number (aceptamos Unknown como comodín)
+                if (left_type == &NormalizedType::Number || left_type.is_unknown())
+                    && (right_type == &NormalizedType::Number || right_type.is_unknown())
+                {
                     NormalizedType::Number
                 } else {
                     return Err(SemanticError::InvalidBinaryOperator {
@@ -138,8 +133,10 @@ impl ExpressionChecker {
             | BinaryOperator::LessEqual
             | BinaryOperator::Greater
             | BinaryOperator::GreaterEqual => {
-                // Comparación: requiere Number
-                if left_type == &NormalizedType::Number && right_type == &NormalizedType::Number {
+                // Comparación: requiere Number (aceptamos Unknown como comodín)
+                if (left_type == &NormalizedType::Number || left_type.is_unknown())
+                    && (right_type == &NormalizedType::Number || right_type.is_unknown())
+                {
                     NormalizedType::Boolean
                 } else {
                     return Err(SemanticError::InvalidBinaryOperator {
@@ -179,13 +176,6 @@ impl ExpressionChecker {
         operand_type: &NormalizedType,
         is_negation: bool,
     ) -> SemanticResult<ExpressionType> {
-        if operand_type.is_print_result() {
-            return Err(SemanticError::InvalidOperandType {
-                expected: "value".to_string(),
-                found: operand_type.to_string(),
-                context: "unary operator".to_string(),
-            });
-        }
         if is_negation {
             if operand_type == &NormalizedType::Number {
                 Ok(ExpressionType::value(NormalizedType::Number))
@@ -231,7 +221,7 @@ impl ExpressionChecker {
                         found: argument_types.len(),
                     });
                 }
-                return Ok(ExpressionType::value(NormalizedType::PrintResult));
+                return Ok(ExpressionType::value(argument_types[0].clone()));
             }
             "sqrt" | "sin" | "cos" | "exp" => {
                 if argument_types.len() != 1 {
@@ -456,16 +446,6 @@ impl ExpressionChecker {
         environment: &TypeEnvironment,
         span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        if let Some(found) = value_type
-            && found.is_print_result()
-        {
-            return Err(SemanticError::InvalidOperandType {
-                expected: "value".to_string(),
-                found: found.to_string(),
-                context: "let".to_string(),
-            });
-        }
-
         if let (Some(expected), Some(found)) = (annotation_type, value_type)
             && !environment.is_compatible(found, expected)
         {
@@ -497,13 +477,6 @@ impl ExpressionChecker {
         environment: &TypeEnvironment,
         span: &Span,
     ) -> SemanticResult<ExpressionType> {
-        if value_type.is_print_result() {
-            return Err(SemanticError::InvalidOperandType {
-                expected: "value".to_string(),
-                found: value_type.to_string(),
-                context: "assignment".to_string(),
-            });
-        }
         if !target_type.is_lvalue {
             return Err(SemanticError::InvalidTarget {
                 context: "asignación (no es lvalue)".to_string(),

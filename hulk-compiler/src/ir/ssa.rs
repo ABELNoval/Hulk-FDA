@@ -289,26 +289,23 @@ fn renaming_for_function(function: &mut IRFunction) {
             }
 
             // now remap the defined target if any
-            if let Some(target) = instr.defines_value() {
-                let old = target.0.clone();
-                let new = svgen.next_value();
-                map.insert(old.clone(), new.clone());
-
-                // replace the target inside the instruction kind
-                match &mut instr.kind {
-                    IRInstructionKind::Assign { target, .. }
-                    | IRInstructionKind::Binary { target, .. }
-                    | IRInstructionKind::Unary { target, .. }
-                    | IRInstructionKind::Phi { target, .. } => {
-                        *target = IRValueId::new(new);
-                    }
-                    IRInstructionKind::Call {
-                        target: Some(t), ..
-                    } => {
-                        *t = IRValueId::new(new);
-                    }
-                    _ => {}
+            match &mut instr.kind {
+                IRInstructionKind::Assign { target, .. }
+                | IRInstructionKind::Binary { target, .. }
+                | IRInstructionKind::Unary { target, .. }
+                | IRInstructionKind::Phi { target, .. } => {
+                    let old = target.0.clone();
+                    let new = svgen.next_value();
+                    map.insert(old.clone(), new.clone());
+                    *target = IRValueId::new(new);
                 }
+                IRInstructionKind::Call { target: t, .. } => {
+                    let old = t.0.clone();
+                    let new = svgen.next_value();
+                    map.insert(old.clone(), new.clone());
+                    *t = IRValueId::new(new);
+                }
+                _ => {}
             }
         }
     }

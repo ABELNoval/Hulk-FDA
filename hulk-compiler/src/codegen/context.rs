@@ -85,7 +85,7 @@ impl LlvmContext {
     pub fn new() -> Self {
         use std::sync::atomic::{AtomicU64, Ordering};
         static CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(0);
-        
+
         Self {
             id: CONTEXT_COUNTER.fetch_add(1, Ordering::SeqCst),
         }
@@ -114,17 +114,17 @@ impl Default for LlvmContext {
 pub struct LlvmModule {
     /// Unique context this module belongs to.
     context_id: u64,
-    
+
     /// Name of the module.
     name: String,
-    
+
     /// Target triple (e.g., "x86_64-unknown-linux-gnu").
     target_triple: String,
-    
+
     /// Data layout string.
     /// Example: "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
     data_layout: String,
-    
+
     /// Symbol table: function names -> (return type, param types)
     /// Used to detect symbol conflicts and validate call sites.
     symbols: std::collections::HashMap<String, (String, Vec<String>)>,
@@ -133,7 +133,7 @@ pub struct LlvmModule {
     prototypes: std::collections::HashMap<String, (String, Vec<String>, bool)>,
     /// Runtime declarations (external functions provided by the runtime)
     runtime_decls: std::collections::HashMap<String, (String, Vec<String>)>,
-    
+
     /// Whether the module has been finalized (can no longer add symbols).
     finalized: bool,
 }
@@ -244,7 +244,10 @@ impl LlvmModule {
         }
 
         if self.runtime_decls.contains_key(&name_str) {
-            return Err(format!("Symbol '{}' conflicts with runtime declaration", name_str));
+            return Err(format!(
+                "Symbol '{}' conflicts with runtime declaration",
+                name_str
+            ));
         }
 
         if self.symbols.contains_key(&name_str) {
@@ -260,7 +263,8 @@ impl LlvmModule {
                 return Err(format!("Conflicting definition for symbol '{}'", name_str));
             }
             // mark prototype as defined and mirror into symbols
-            self.prototypes.insert(name_str.clone(), (ret.clone(), params.clone(), true));
+            self.prototypes
+                .insert(name_str.clone(), (ret.clone(), params.clone(), true));
         }
 
         self.symbols
@@ -278,7 +282,9 @@ impl LlvmModule {
         let name_str = name.into();
 
         if self.finalized {
-            return Err("Module is finalized; cannot register new runtime declarations".to_string());
+            return Err(
+                "Module is finalized; cannot register new runtime declarations".to_string(),
+            );
         }
 
         if self.runtime_decls.contains_key(&name_str) || self.symbols.contains_key(&name_str) {
@@ -303,8 +309,10 @@ impl LlvmModule {
     /// Add a set of default runtime declarations used by lowering.
     pub fn add_default_runtime_decls(&mut self) {
         // print(ptr) -> void
-        let _ = self.register_runtime_decl("print", "void", vec!["ptr".to_string()]);
-        // hulk_alloc(i64) -> ptr
+        let _ = self.register_runtime_decl("print_number", "double", vec!["double".to_string()]);
+        let _ = self.register_runtime_decl("print_string", "ptr", vec!["ptr".to_string()]);
+        let _ = self.register_runtime_decl("print_bool", "i1", vec!["i1".to_string()]);
+
         let _ = self.register_runtime_decl("hulk_alloc", "ptr", vec!["i64".to_string()]);
         // hulk_free(ptr) -> void
         let _ = self.register_runtime_decl("hulk_free", "void", vec!["ptr".to_string()]);
@@ -349,13 +357,13 @@ impl LlvmModule {
 pub struct LlvmBuilder {
     /// The module this builder is associated with.
     module: LlvmModule,
-    
+
     /// Current function being built (if any).
     current_function: Option<String>,
-    
+
     /// Current basic block (if any).
     current_block: Option<String>,
-    
+
     /// Instruction buffer.
     instructions: Vec<String>,
 }

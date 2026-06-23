@@ -10,6 +10,7 @@ use crate::parser::ast::{
     BinaryOperator, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal, Parameter,
     Program, TypeReference, UnaryOperator,
 };
+use crate::semantic::type_system::NormalizedType;
 use crate::utils::errors::span::Span;
 
 use super::block::{BasicBlock, BasicBlockId};
@@ -90,6 +91,7 @@ pub struct IRBuilder {
     block_counter: usize,
     scopes: Vec<HashMap<String, IRValueId>>,
     loop_stack: Vec<LoopContext>,
+    expr_types: HashMap<usize, NormalizedType>,
 }
 
 impl IRBuilder {
@@ -102,6 +104,7 @@ impl IRBuilder {
             block_counter: 0,
             scopes: Vec::new(),
             loop_stack: Vec::new(),
+            expr_types: HashMap::new(),
         }
     }
 
@@ -213,6 +216,11 @@ impl IRBuilder {
 
     pub fn fmt_display(&self) -> String {
         self.module.fmt_display()
+    }
+
+    /// Set pre-computed expression types produced by the semantic analyzer.
+    pub fn set_expr_types(&mut self, types: std::collections::HashMap<usize, NormalizedType>) {
+        self.expr_types = types;
     }
 
     pub fn lower_program(&mut self, program: &Program) -> Result<IRModule, IRLoweringError> {
@@ -572,37 +580,40 @@ impl IRBuilder {
     fn lower_call(
         &mut self,
         callee: &Expr,
-        arguments: &[Expr],
-        _expr: &Expr,
+        args: &[Expr],
+        expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let callee_name = self.resolve_callee(callee)?;
-
-        let argument_values = arguments
+        let arg_values = args
             .iter()
-            .map(|argument| self.lower_expr(argument))
+            .map(|a| self.lower_expr(a))
             .collect::<Result<Vec<_>, _>>()?;
 
         if callee_name == "print" {
-            self.emit(IRInstruction::new(IRInstructionKind::Call {
-                target: None,
+            let arg_node = &args[0];
 
-                callee: callee_name,
+            // Use semantic annotation if available; otherwise fallback
+            // to Unknown which maps to `print_object` at runtime.
+            let arg_type = self
+                .expr_types
+                .get(&arg_node.id)
+                .cloned()
+                .unwrap_or(NormalizedType::Unknown);
 
-                arguments: argument_values.into_iter().map(IROperand::Value).collect(),
+            let runtime_print = match arg_type {
+                NormalizedType::Number => "print_number",
 
-                original: None,
-            }))?;
+                NormalizedType::String => "print_string",
 
-            return Ok(self.fresh_value());
+                NormalizedType::Boolean => "print_bool",
+
+                _ => "print_object",
+            };
+
+            return self.emit_call_with_values(runtime_print, arg_values);
         }
 
-        let callee_name = self.resolve_callee(callee)?;
-        let argument_values = arguments
-            .iter()
-            .map(|argument| self.lower_expr(argument))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        self.emit_call_with_values(&callee_name, argument_values)
+        self.emit_call_with_values(&callee_name, arg_values)
     }
 
     fn lower_assignment(
@@ -885,53 +896,6 @@ impl IRBuilder {
         body_result
     }
 
-    fn lower_return(
-        &mut self,
-        value: Option<&Expr>,
-        _expr: &Expr,
-    ) -> Result<IRValueId, IRLoweringError> {
-        let operand = value
-            .as_ref()
-            .map(|inner| self.lower_expr(inner))
-            .transpose()?;
-
-        self.emit(IRInstruction::new(IRInstructionKind::Return(
-            operand.clone().map(IROperand::Value),
-        )))?;
-        Ok(operand.unwrap_or_else(|| self.fresh_value()))
-    }
-
-    fn lower_break(&mut self, expr: &Expr) -> Result<IRValueId, IRLoweringError> {
-        let loop_context =
-            self.loop_stack.last().cloned().ok_or_else(|| {
-                Self::error_at(expr.span.clone(), "'break' used outside of a loop")
-            })?;
-
-        let function_name = self.current_function_name()?.to_string();
-        let current_block = self.current_block_id()?.clone();
-        self.link_blocks(&function_name, &current_block, &loop_context.break_block)?;
-
-        self.emit(IRInstruction::new(IRInstructionKind::Jump {
-            target: loop_context.break_block,
-        }))?;
-        self.emit_constant_boolean(false, IRValueKind::Temporary)
-    }
-
-    fn lower_continue(&mut self, expr: &Expr) -> Result<IRValueId, IRLoweringError> {
-        let loop_context = self.loop_stack.last().cloned().ok_or_else(|| {
-            Self::error_at(expr.span.clone(), "'continue' used outside of a loop")
-        })?;
-
-        let function_name = self.current_function_name()?.to_string();
-        let current_block = self.current_block_id()?.clone();
-        self.link_blocks(&function_name, &current_block, &loop_context.continue_block)?;
-
-        self.emit(IRInstruction::new(IRInstructionKind::Jump {
-            target: loop_context.continue_block,
-        }))?;
-        self.emit_constant_boolean(false, IRValueKind::Temporary)
-    }
-
     fn lower_member_access(
         &mut self,
         object: &Expr,
@@ -1045,7 +1009,7 @@ impl IRBuilder {
     ) -> Result<IRValueId, IRLoweringError> {
         let target = self.fresh_value();
         self.emit(IRInstruction::new(IRInstructionKind::Call {
-            target: Some(target.clone()),
+            target: target.clone(),
             callee: callee.to_string(),
             arguments: arguments.into_iter().map(IROperand::Value).collect(),
             original: None,

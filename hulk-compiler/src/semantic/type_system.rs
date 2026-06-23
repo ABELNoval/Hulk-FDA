@@ -59,8 +59,6 @@ pub enum NormalizedType {
     Iterable(Box<NormalizedType>),
     /// Tipo vector (por ejemplo, Number[])
     Vector(Box<NormalizedType>),
-    /// Tipo para el resultado de la función print
-    PrintResult,
     /// Tipo desconocido (útil para error recovery)
     Unknown,
 }
@@ -91,12 +89,8 @@ impl NormalizedType {
         matches!(self, Self::Number | Self::String | Self::Boolean)
     }
 
-    pub fn is_print_result(&self) -> bool {
-        matches!(self, Self::PrintResult)
-    }
-
     pub fn is_value_type(&self) -> bool {
-        !matches!(self, Self::Unknown | Self::PrintResult)
+        !matches!(self, Self::Unknown)
     }
 
     pub fn is_unknown(&self) -> bool {
@@ -113,7 +107,6 @@ impl std::fmt::Display for NormalizedType {
             NormalizedType::Named(name) => write!(f, "{}", name),
             NormalizedType::Iterable(inner) => write!(f, "{}*", inner),
             NormalizedType::Vector(inner) => write!(f, "{}[]", inner),
-            NormalizedType::PrintResult => write!(f, "PrintResult"),
             NormalizedType::Unknown => write!(f, "?"),
         }
     }
@@ -363,7 +356,6 @@ impl TypeEnvironment {
             (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => self.types_equal(a, b),
             (NormalizedType::Vector(a), NormalizedType::Vector(b)) => self.types_equal(a, b),
             (NormalizedType::Unknown, NormalizedType::Unknown) => true,
-            (NormalizedType::PrintResult, NormalizedType::PrintResult) => true,
             _ => false,
         }
     }

@@ -158,6 +158,34 @@ impl SymbolTable {
             .and_then(|scope| scope.get(name).cloned())
     }
 
+    pub fn update_function_return_type(
+        &mut self,
+        name: &str,
+        return_type: NormalizedType,
+    ) -> Result<(), SemanticError> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(symbol) = scope.get_mut(name) {
+                match symbol {
+                    SymbolInfo::Function {
+                        return_type: existing_return,
+                        ..
+                    } => {
+                        *existing_return = return_type;
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(SemanticError::UndefinedFunction {
+                            name: name.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        Err(SemanticError::UndefinedFunction {
+            name: name.to_string(),
+        })
+    }
+
     /// Lista todos los símbolos en el scope actual
     pub fn symbols_in_current_scope(&self) -> Vec<SymbolInfo> {
         self.scopes
@@ -197,7 +225,7 @@ impl SymbolTable {
         let print_fn = SymbolInfo::Function {
             name: "print".into(),
             parameters: vec![print_param],
-            return_type: NormalizedType::PrintResult,
+            return_type: NormalizedType::Unknown,
             span: span.clone(),
         };
         self.scopes

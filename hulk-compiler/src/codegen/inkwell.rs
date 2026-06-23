@@ -53,12 +53,13 @@ mod real {
         CodegenArtifact, CodegenBackend, CodegenContext, CodegenError, CodegenResult, IRModule,
     };
     use crate::codegen::CodegenTarget;
+    use inkwell::builder::Builder;
     use inkwell::context::Context;
+    use inkwell::module::Module;
     use inkwell::targets::{TargetData, TargetTriple};
     use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
-    use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, PointerValue};
+    use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, PointerValue, ValueKind};
     use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
-
     use std::collections::HashMap;
 
     #[derive(Debug)]
@@ -73,6 +74,43 @@ mod real {
     impl Default for LlvmInkwellBackend {
         fn default() -> Self {
             Self::new()
+        }
+    }
+
+    fn ensure_string<'ctx>(
+        ctx: &'ctx Context,
+        llvm_mod: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        val: BasicValueEnum<'ctx>,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        if val.is_float_value() {
+            let num_to_str_fn = match llvm_mod.get_function("hulk_num_to_str") {
+                Some(f) => f,
+
+                None => {
+                    let signature = ctx
+                        .ptr_type(AddressSpace::default())
+                        .fn_type(&[ctx.f64_type().into()], false);
+
+                    llvm_mod.add_function("hulk_num_to_str", signature, None)
+                }
+            };
+
+            let call = builder
+                .build_call(num_to_str_fn, &[val.into()], "num_cast")
+                .map_err(|e| CodegenError::BackendFailure {
+                    message: e.to_string(),
+                })?;
+
+            match call.try_as_basic_value() {
+                ValueKind::Basic(v) => Ok(v),
+
+                _ => Err(CodegenError::BackendFailure {
+                    message: "hulk_num_to_str no devolvió un valor".to_string(),
+                }),
+            }
+        } else {
+            Ok(val)
         }
     }
 
@@ -130,8 +168,6 @@ mod real {
     ) -> CodegenResult<BasicValueEnum<'ctx>> {
         Ok(match operand {
             crate::ir::IROperand::Integer(value) => {
-                println!("WARNING: Integer operand encontrado -> {}", value);
-
                 ctx.i64_type().const_int(*value as u64, true).into()
             }
             crate::ir::IROperand::Float(value) => ctx.f64_type().const_float(*value).into(),
@@ -301,12 +337,6 @@ mod real {
                         } = &instr.kind
                         {
                             if module.function(&callee).is_some() {
-                                continue;
-                            }
-                            if callee == "print" {
-                                extern_prototypes
-                                    .entry(callee.clone())
-                                    .or_insert(("void".to_string(), vec!["double".to_string()]));
                                 continue;
                             }
                             let params = arguments
@@ -532,7 +562,10 @@ mod real {
                                             r.into_float_value(),
                                             "tmpadd",
                                         )
-                                        .map(BasicValueEnum::from),
+                                        .map(BasicValueEnum::from)
+                                        .map_err(|err| CodegenError::BackendFailure {
+                                            message: format!("failed to emit binary op: {:?}", err),
+                                        }),
 
                                     crate::ir::IRBinaryOp::Sub => builder
                                         .build_float_sub(
@@ -540,7 +573,10 @@ mod real {
                                             r.into_float_value(),
                                             "tmpsub",
                                         )
-                                        .map(BasicValueEnum::from),
+                                        .map(BasicValueEnum::from)
+                                        .map_err(|err| CodegenError::BackendFailure {
+                                            message: format!("failed to emit binary op: {:?}", err),
+                                        }),
 
                                     crate::ir::IRBinaryOp::Mul => builder
                                         .build_float_mul(
@@ -548,7 +584,10 @@ mod real {
                                             r.into_float_value(),
                                             "tmpmul",
                                         )
-                                        .map(BasicValueEnum::from),
+                                        .map(BasicValueEnum::from)
+                                        .map_err(|err| CodegenError::BackendFailure {
+                                            message: format!("failed to emit binary op: {:?}", err),
+                                        }),
 
                                     crate::ir::IRBinaryOp::Div => builder
                                         .build_float_div(
@@ -556,16 +595,25 @@ mod real {
                                             r.into_float_value(),
                                             "tmpdiv",
                                         )
-                                        .map(BasicValueEnum::from),
+                                        .map(BasicValueEnum::from)
+                                        .map_err(|err| CodegenError::BackendFailure {
+                                            message: format!("failed to emit binary op: {:?}", err),
+                                        }),
 
                                     // ===== Booleanos =====
                                     crate::ir::IRBinaryOp::And => builder
                                         .build_and(l.into_int_value(), r.into_int_value(), "tmpand")
-                                        .map(BasicValueEnum::from),
+                                        .map(BasicValueEnum::from)
+                                        .map_err(|err| CodegenError::BackendFailure {
+                                            message: format!("failed to emit binary op: {:?}", err),
+                                        }),
 
                                     crate::ir::IRBinaryOp::Or => builder
                                         .build_or(l.into_int_value(), r.into_int_value(), "tmpor")
-                                        .map(BasicValueEnum::from),
+                                        .map(BasicValueEnum::from)
+                                        .map_err(|err| CodegenError::BackendFailure {
+                                            message: format!("failed to emit binary op: {:?}", err),
+                                        }),
 
                                     // ===== Comparaciones =====
                                     crate::ir::IRBinaryOp::Eq => {
@@ -578,6 +626,12 @@ mod real {
                                                     "tmpeq",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         } else {
                                             builder
                                                 .build_float_compare(
@@ -587,6 +641,12 @@ mod real {
                                                     "tmpeq",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         }
                                     }
 
@@ -600,6 +660,12 @@ mod real {
                                                     "tmpne",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         } else {
                                             builder
                                                 .build_float_compare(
@@ -609,6 +675,12 @@ mod real {
                                                     "tmpne",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         }
                                     }
 
@@ -622,6 +694,12 @@ mod real {
                                                     "tmplt",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         } else {
                                             builder
                                                 .build_float_compare(
@@ -631,6 +709,12 @@ mod real {
                                                     "tmplt",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         }
                                     }
 
@@ -644,6 +728,12 @@ mod real {
                                                     "tmple",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         } else {
                                             builder
                                                 .build_float_compare(
@@ -653,6 +743,12 @@ mod real {
                                                     "tmple",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         }
                                     }
 
@@ -666,6 +762,12 @@ mod real {
                                                     "tmpgt",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         } else {
                                             builder
                                                 .build_float_compare(
@@ -675,6 +777,12 @@ mod real {
                                                     "tmpgt",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         }
                                     }
 
@@ -688,6 +796,12 @@ mod real {
                                                     "tmpge",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         } else {
                                             builder
                                                 .build_float_compare(
@@ -697,6 +811,12 @@ mod real {
                                                     "tmpge",
                                                 )
                                                 .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         }
                                     }
 
@@ -706,7 +826,10 @@ mod real {
                                             r.into_float_value(),
                                             "tmpmod",
                                         )
-                                        .map(BasicValueEnum::from),
+                                        .map(BasicValueEnum::from)
+                                        .map_err(|err| CodegenError::BackendFailure {
+                                            message: format!("failed to emit binary op: {:?}", err),
+                                        }),
 
                                     crate::ir::IRBinaryOp::Pow => {
                                         let pow_fn = match llvm_mod.get_function("pow") {
@@ -724,18 +847,57 @@ mod real {
                                         builder
                                             .build_call(pow_fn, &[l.into(), r.into()], "tmppow")
                                             .map(|call| call.try_as_basic_value().basic().unwrap())
+                                            .map_err(|err| CodegenError::BackendFailure {
+                                                message: format!(
+                                                    "failed to emit binary op: {:?}",
+                                                    err
+                                                ),
+                                            })
                                     }
-                                    crate::ir::IRBinaryOp::Concat => Ok(BasicValueEnum::from(
-                                        ctx.ptr_type(AddressSpace::default()).const_null(),
-                                    )),
+                                    crate::ir::IRBinaryOp::Concat
+                                    | crate::ir::IRBinaryOp::Concatenate => {
+                                        let left_str = ensure_string(&ctx, &llvm_mod, &builder, l)?;
 
-                                    crate::ir::IRBinaryOp::Concatenate => Ok(BasicValueEnum::from(
-                                        ctx.ptr_type(AddressSpace::default()).const_null(),
-                                    )),
-                                };
-                                let res = res.map_err(|err| CodegenError::BackendFailure {
-                                    message: format!("failed to emit binary op: {:?}", err),
-                                })?;
+                                        let right_str =
+                                            ensure_string(&ctx, &llvm_mod, &builder, r)?;
+
+                                        let func_name = match op {
+                                            crate::ir::IRBinaryOp::Concat => "hulk_concat",
+
+                                            _ => "hulk_concat_space",
+                                        };
+
+                                        let concat_fn = match llvm_mod.get_function(func_name) {
+                                            Some(f) => f,
+
+                                            None => {
+                                                let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+                                                let signature = ptr_ty.fn_type(
+                                                    &[ptr_ty.into(), ptr_ty.into()],
+                                                    false,
+                                                );
+
+                                                llvm_mod.add_function(func_name, signature, None)
+                                            }
+                                        };
+
+                                        builder
+                                            .build_call(
+                                                concat_fn,
+                                                &[left_str.into(), right_str.into()],
+                                                "concat_res",
+                                            )
+                                            .map(|call| match call.try_as_basic_value() {
+                                                ValueKind::Basic(v) => v,
+
+                                                _ => panic!("{} no devolvió un valor", func_name),
+                                            })
+                                            .map_err(|e| CodegenError::BackendFailure {
+                                                message: e.to_string(),
+                                            })
+                                    }
+                                }?;
                                 let name = target.0.trim_start_matches('%');
                                 let ptr =
                                     ensure_slot(&builder, name, res.get_type(), &mut allocas)?;
@@ -754,37 +916,6 @@ mod real {
                                 arguments,
                                 ..
                             } => {
-                                if callee == "print" {
-                                    if target.is_some() {
-                                        return emit_backend_failure("print cannot have a target");
-                                    }
-                                    let print_fn = match llvm_mod.get_function("print") {
-                                        Some(f) => f,
-                                        None => {
-                                            let sig = ctx
-                                                .void_type()
-                                                .fn_type(&[ctx.f64_type().into()], false);
-                                            llvm_mod.add_function("print", sig, None)
-                                        }
-                                    };
-                                    let argsv: Vec<BasicValueEnum> = arguments
-                                        .iter()
-                                        .map(|a| lower_operand(&ctx, &builder, &allocas, a))
-                                        .collect::<Result<_, _>>()?;
-                                    let _ = builder
-                                        .build_call(
-                                            print_fn,
-                                            &basic_metadata_values(&argsv),
-                                            "callprint",
-                                        )
-                                        .map_err(|err| CodegenError::BackendFailure {
-                                            message: format!(
-                                                "failed to emit print call: {:?}",
-                                                err
-                                            ),
-                                        })?;
-                                    continue;
-                                }
                                 let callee_fn =
                                     llvm_mod.get_function(callee.as_str()).ok_or_else(|| {
                                         CodegenError::BackendFailure {
@@ -807,7 +938,7 @@ mod real {
                                             callee, err
                                         ),
                                     })?;
-                                if let Some(t) = target {
+                                if let t = target {
                                     let name = t.0.trim_start_matches('%');
                                     if let Some(rv) = call_site.try_as_basic_value().basic() {
                                         let ptr = ensure_slot(

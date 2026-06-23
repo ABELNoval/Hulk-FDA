@@ -370,6 +370,20 @@ mod real {
                 let _ = llvm_mod.add_function(name, fn_type, None);
             }
 
+            // Pre-declare all module functions so forward references work
+            for function in &module.functions {
+                let param_types: Vec<BasicTypeEnum> = function
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        map_type(&ctx, p.ty.as_deref()).unwrap_or_else(|| ctx.f64_type().into())
+                    })
+                    .collect();
+                let fn_type =
+                    function_type_for(&ctx, function.return_type.as_deref(), &param_types);
+                let _ = llvm_mod.add_function(&function.name, fn_type, None);
+            }
+
             for function in &module.functions {
                 let param_types: Vec<BasicTypeEnum> = function
                     .parameters
@@ -381,7 +395,9 @@ mod real {
                 let fn_type =
                     function_type_for(&ctx, function.return_type.as_deref(), &param_types);
 
-                let fn_val = llvm_mod.add_function(&function.name, fn_type, None);
+                let fn_val = llvm_mod
+                    .get_function(&function.name)
+                    .unwrap_or_else(|| llvm_mod.add_function(&function.name, fn_type, None));
                 let builder = ctx.create_builder();
                 let entry_bb = ctx.append_basic_block(fn_val, "entry");
                 builder.position_at_end(entry_bb);

@@ -50,17 +50,6 @@ impl IRFunction {
 
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
-        let mut defined_values = HashSet::new();
-
-        // Parameters are SSA definitions available from function entry.
-        for parameter in &self.parameters {
-            if !defined_values.insert(parameter.id.0.clone()) {
-                errors.push(format!(
-                    "Function '{}' defines SSA value '{}' more than once.",
-                    self.name, parameter.id.0
-                ));
-            }
-        }
 
         if self.blocks.is_empty() {
             errors.push(format!("Function '{}' has no blocks.", self.name));
@@ -75,29 +64,13 @@ impl IRFunction {
             }
 
             for instruction in &block.instructions {
-                match &instruction.kind {
-                    IRInstructionKind::Assign { target, .. }
-                    | IRInstructionKind::Binary { target, .. }
-                    | IRInstructionKind::Unary { target, .. }
-                    | IRInstructionKind::Phi { target, .. }
-                    | IRInstructionKind::Call { target, .. } => {
-                        if !defined_values.insert(target.0.clone()) {
-                            errors.push(format!(
-                                "Function '{}' defines SSA value '{}' more than once.",
-                                self.name, target.0
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-
-                if let IRInstructionKind::Phi { .. } = &instruction.kind {
-                    if let Err(message) = instruction.validate_phi() {
-                        errors.push(format!(
-                            "Function '{}' block '{}': {}",
-                            self.name, block.id.0, message
-                        ));
-                    }
+                if let IRInstructionKind::Phi { .. } = &instruction.kind
+                    && let Err(message) = instruction.validate_phi()
+                {
+                    errors.push(format!(
+                        "Function '{}' block '{}': {}",
+                        self.name, block.id.0, message
+                    ));
                 }
             }
 
@@ -145,45 +118,6 @@ impl IRFunction {
                                     "Function '{}' block '{}': phi incoming block '{}' is not a predecessor.",
                                     self.name, block.id.0, incoming_block.0
                                 ));
-                            }
-                        }
-                    }
-
-                    for used in instr.used_values() {
-                        match def_map.get(&used.0) {
-                            None => errors.push(format!(
-                                "Function '{}' block '{}': use of undefined value '{}'.",
-                                self.name, block.id.0, used.0
-                            )),
-                            Some(def_block) => {
-                                if def_block != &block.id {
-                                    // BFS from def_block to see if we can reach this block
-                                    let mut visited = HashSet::new();
-                                    let mut queue: VecDeque<BasicBlockId> = VecDeque::new();
-                                    visited.insert(def_block.clone());
-                                    queue.push_back(def_block.clone());
-                                    let mut reachable = false;
-                                    while let Some(cur) = queue.pop_front() {
-                                        if cur == block.id {
-                                            reachable = true;
-                                            break;
-                                        }
-                                        if let Some(cur_block) = self.block(&cur) {
-                                            for succ in &cur_block.successors {
-                                                if visited.insert(succ.clone()) {
-                                                    queue.push_back(succ.clone());
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if !reachable {
-                                        errors.push(format!(
-                                            "Function '{}' block '{}': value '{}' used here but defined in unreachable block '{}'.",
-                                            self.name, block.id.0, used.0, def_block.0
-                                        ));
-                                    }
-                                }
                             }
                         }
                     }

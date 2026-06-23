@@ -356,7 +356,7 @@ impl IRBuilder {
                 right,
             } => self.lower_binary(left, operator, right, expr),
             ExprKind::Block(expressions) => self.lower_block(expressions, expr),
-            ExprKind::Call { callee, arguments } => self.lower_call(callee, arguments, expr),
+            ExprKind::Call { callee, arguments } => self.lower_call(callee, arguments),
             ExprKind::Assignment { target, value } => self.lower_assignment(target, value, expr),
             ExprKind::If {
                 condition,
@@ -577,12 +577,7 @@ impl IRBuilder {
         }
     }
 
-    fn lower_call(
-        &mut self,
-        callee: &Expr,
-        args: &[Expr],
-        expr: &Expr,
-    ) -> Result<IRValueId, IRLoweringError> {
+    fn lower_call(&mut self, callee: &Expr, args: &[Expr]) -> Result<IRValueId, IRLoweringError> {
         let callee_name = self.resolve_callee(callee)?;
         let arg_values = args
             .iter()
@@ -626,7 +621,10 @@ impl IRBuilder {
 
         match &target.kind {
             ExprKind::Identifier(name) => {
-                let assigned = self.fresh_value();
+                // REUTILIZAR el ID existente si la variable ya está definida
+                let assigned = self
+                    .lookup_variable(name)
+                    .unwrap_or_else(|| self.fresh_value());
                 self.emit(IRInstruction::new(IRInstructionKind::Assign {
                     target: assigned.clone(),
                     value: IROperand::Value(value_id),
@@ -662,19 +660,8 @@ impl IRBuilder {
                 ));
             }
 
-            if let Some(Expr {
-                kind:
-                    ExprKind::If {
-                        condition,
-                        then_expr,
-                        elif_parts,
-                        else_expr,
-                    },
-                ..
-            }) = nested_else
-            {
-                return self.lower_if(&condition, &then_expr, &elif_parts, &else_expr, expr);
-            }
+            let nested_else_boxed = nested_else.map(Box::new);
+            return self.lower_if(condition, then_expr, &[], &nested_else_boxed, expr);
         }
 
         let condition_value = self.lower_expr(condition)?;
@@ -704,42 +691,68 @@ impl IRBuilder {
 
         let saved_scopes = self.scopes.clone();
 
+        // THEN branch
         self.set_current_block(function_name.clone(), then_name)?;
         self.scopes = saved_scopes.clone();
         let then_value = self.lower_expr(then_expr)?;
-        if !self.current_block_terminated()? {
-            let then_current = self.current_block_id()?.clone();
-            self.link_blocks(&function_name, &then_current, &merge_block)?;
+        let then_exit = self.current_block_id()?.clone();
+        let then_reaches = !self.current_block_terminated()?;
+        if then_reaches {
+            self.link_blocks(&function_name, &then_exit, &merge_block)?;
             self.emit(IRInstruction::new(IRInstructionKind::Jump {
                 target: merge_block.clone(),
             }))?;
         }
 
+        // ELSE branch
         self.set_current_block(function_name.clone(), else_name)?;
         self.scopes = saved_scopes;
         let else_value = match else_expr {
             Some(else_expr) => self.lower_expr(else_expr)?,
             None => self.emit_constant_boolean(false, IRValueKind::Temporary)?,
         };
-        if !self.current_block_terminated()? {
-            let else_current = self.current_block_id()?.clone();
-            self.link_blocks(&function_name, &else_current, &merge_block)?;
+        let else_exit = self.current_block_id()?.clone();
+        let else_reaches = !self.current_block_terminated()?;
+        if else_reaches {
+            self.link_blocks(&function_name, &else_exit, &merge_block)?;
             self.emit(IRInstruction::new(IRInstructionKind::Jump {
                 target: merge_block.clone(),
             }))?;
         }
 
+        // MERGE: build phi only from branches that actually reach the merge block
         self.set_current_block(function_name, merge_name)?;
         let phi_target = self.fresh_value();
-        self.emit(IRInstruction::new(IRInstructionKind::Phi {
-            target: phi_target.clone(),
-            incoming: vec![(then_value, then_block), (else_value, else_block)],
-            original: None,
-        }))?;
+        let mut incoming = Vec::new();
+        if then_reaches {
+            incoming.push((then_value, then_exit));
+        }
+        if else_reaches {
+            incoming.push((else_value, else_exit));
+        }
+
+        if incoming.len() >= 2 {
+            self.emit(IRInstruction::new(IRInstructionKind::Phi {
+                target: phi_target.clone(),
+                incoming,
+                original: None,
+            }))?;
+        } else if incoming.len() == 1 {
+            self.emit(IRInstruction::new(IRInstructionKind::Assign {
+                target: phi_target.clone(),
+                value: IROperand::Value(incoming[0].0.clone()),
+                original: None,
+            }))?;
+        } else {
+            self.emit(IRInstruction::new(IRInstructionKind::Assign {
+                target: phi_target.clone(),
+                value: IROperand::Boolean(false),
+                original: None,
+            }))?;
+        }
 
         Ok(phi_target)
     }
-
     fn lower_while(
         &mut self,
         condition: &Expr,
@@ -792,7 +805,7 @@ impl IRBuilder {
                 target: cond_block,
             }))?;
         }
-        self.pop_scope();
+        // self.pop_scope();
         self.loop_stack.pop();
 
         self.set_current_block(function_name, exit_name)?;
@@ -855,7 +868,7 @@ impl IRBuilder {
                 target: cond_block,
             }))?;
         }
-        self.pop_scope();
+        // self.pop_scope();
         self.loop_stack.pop();
 
         self.set_current_block(function_name, exit_name)?;

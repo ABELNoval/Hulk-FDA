@@ -425,6 +425,8 @@ mod real {
                     }
                 }
 
+                let mut pending_phi_incomings = Vec::new();
+
                 for block in &function.blocks {
                     let bb = *block_map.get(&block.id.0).ok_or_else(|| {
                         CodegenError::BackendFailure {
@@ -434,6 +436,7 @@ mod real {
                     builder.position_at_end(bb);
 
                     // First emit PHI nodes so incoming values can be referenced
+                    // First emit PHI nodes (without incoming values yet)
                     for instr in &block.instructions {
                         if let IRInstructionKind::Phi {
                             target, incoming, ..
@@ -470,23 +473,7 @@ mod real {
                                         ),
                                     },
                                 )?;
-                                let phi_incoming_builder = ctx.create_builder();
-                                let terminator = incoming_bb.get_terminator().ok_or_else(|| {
-                                    CodegenError::BackendFailure {
-                                        message: format!(
-                                            "phi incoming block '{}' has no terminator in function '{}'",
-                                            incoming_block.0, function.name
-                                        ),
-                                    }
-                                })?;
-                                phi_incoming_builder.position_before(&terminator);
-                                let incoming_value = lower_operand(
-                                    &ctx,
-                                    &phi_incoming_builder,
-                                    &allocas,
-                                    &crate::ir::IROperand::Value(value_id.clone()),
-                                )?;
-                                phi.add_incoming(&[(&incoming_value, incoming_bb)]);
+                                pending_phi_incomings.push((phi, value_id.clone(), incoming_bb));
                             }
 
                             let phi_value = phi.as_basic_value();
@@ -553,6 +540,10 @@ mod real {
                                     l.get_type().print_to_string().to_string(),
                                     r.get_type().print_to_string().to_string()
                                 );
+
+                                let both_ptr =
+                                    matches!(l.get_type(), BasicTypeEnum::PointerType(_))
+                                        && matches!(r.get_type(), BasicTypeEnum::PointerType(_));
 
                                 let res = match op {
                                     // ===== Operaciones numéricas =====
@@ -632,6 +623,54 @@ mod real {
                                                         err
                                                     ),
                                                 })
+                                        } else if both_ptr {
+                                            let strcmp_fn = match llvm_mod.get_function("strcmp") {
+                                                Some(f) => f,
+                                                None => {
+                                                    let i32_ty = ctx.i32_type();
+                                                    let ptr_ty =
+                                                        ctx.ptr_type(AddressSpace::default());
+                                                    let sig = i32_ty.fn_type(
+                                                        &[ptr_ty.into(), ptr_ty.into()],
+                                                        false,
+                                                    );
+                                                    llvm_mod.add_function("strcmp", sig, None)
+                                                }
+                                            };
+                                            let call = builder
+                                                .build_call(
+                                                    strcmp_fn,
+                                                    &[l.into(), r.into()],
+                                                    "strcmp_res",
+                                                )
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit strcmp: {:?}",
+                                                        err
+                                                    ),
+                                                })?;
+                                            let cmp_result = call
+                                                .try_as_basic_value()
+                                                .basic()
+                                                .ok_or_else(|| CodegenError::BackendFailure {
+                                                    message: "strcmp did not return a value"
+                                                        .to_string(),
+                                                })?;
+                                            let zero = ctx.i32_type().const_int(0, false);
+                                            builder
+                                                .build_int_compare(
+                                                    IntPredicate::EQ,
+                                                    cmp_result.into_int_value(),
+                                                    zero,
+                                                    "streq",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
                                         } else {
                                             builder
                                                 .build_float_compare(
@@ -658,6 +697,54 @@ mod real {
                                                     l.into_int_value(),
                                                     r.into_int_value(),
                                                     "tmpne",
+                                                )
+                                                .map(BasicValueEnum::from)
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit binary op: {:?}",
+                                                        err
+                                                    ),
+                                                })
+                                        } else if both_ptr {
+                                            let strcmp_fn = match llvm_mod.get_function("strcmp") {
+                                                Some(f) => f,
+                                                None => {
+                                                    let i32_ty = ctx.i32_type();
+                                                    let ptr_ty =
+                                                        ctx.ptr_type(AddressSpace::default());
+                                                    let sig = i32_ty.fn_type(
+                                                        &[ptr_ty.into(), ptr_ty.into()],
+                                                        false,
+                                                    );
+                                                    llvm_mod.add_function("strcmp", sig, None)
+                                                }
+                                            };
+                                            let call = builder
+                                                .build_call(
+                                                    strcmp_fn,
+                                                    &[l.into(), r.into()],
+                                                    "strcmp_res",
+                                                )
+                                                .map_err(|err| CodegenError::BackendFailure {
+                                                    message: format!(
+                                                        "failed to emit strcmp: {:?}",
+                                                        err
+                                                    ),
+                                                })?;
+                                            let cmp_result = call
+                                                .try_as_basic_value()
+                                                .basic()
+                                                .ok_or_else(|| CodegenError::BackendFailure {
+                                                    message: "strcmp did not return a value"
+                                                        .to_string(),
+                                                })?;
+                                            let zero = ctx.i32_type().const_int(0, false);
+                                            builder
+                                                .build_int_compare(
+                                                    IntPredicate::NE,
+                                                    cmp_result.into_int_value(),
+                                                    zero,
+                                                    "strne",
                                                 )
                                                 .map(BasicValueEnum::from)
                                                 .map_err(|err| CodegenError::BackendFailure {
@@ -1044,6 +1131,26 @@ mod real {
                             IRInstructionKind::Nop => {}
                         }
                     }
+                }
+                // Second pass: add incoming values to phi nodes
+                for (phi, value_id, incoming_bb) in &pending_phi_incomings {
+                    let phi_incoming_builder = ctx.create_builder();
+                    let terminator = incoming_bb.get_terminator().ok_or_else(|| {
+                        CodegenError::BackendFailure {
+                            message: format!(
+                                "phi incoming block '{}' has no terminator after all blocks processed",
+                                incoming_bb.get_name().to_str().unwrap_or("?")
+                            ),
+                        }
+                    })?;
+                    phi_incoming_builder.position_before(&terminator);
+                    let incoming_value = lower_operand(
+                        &ctx,
+                        &phi_incoming_builder,
+                        &allocas,
+                        &crate::ir::IROperand::Value(value_id.clone()),
+                    )?;
+                    phi.add_incoming(&[(&incoming_value, *incoming_bb)]);
                 }
             }
 

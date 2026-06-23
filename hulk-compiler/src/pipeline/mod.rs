@@ -123,7 +123,10 @@ impl CompilationPipeline {
         let mut ir = builder
             .lower_program(&program)
             .map_err(|error| CompilationError::internal(error.to_string()))?;
-        run_ssa_renaming(&mut ir);
+        // run_ssa_renaming(&mut ir);
+        eprintln!("=== IR DUMP ===");
+        eprintln!("{}", ir.fmt_display());
+        eprintln!("===============");
 
         if stage == PipelineStage::Ir {
             return Ok(PipelineReport {

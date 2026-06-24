@@ -947,6 +947,23 @@ impl SemanticAnalyzer {
                 }
                 Ok(NormalizedType::Named(type_name))
             }
+            ExprKind::Assignment { target, value } => {
+                let value_t = self.analyze_expr(value)?;
+                let target_t = self.analyze_expr(target)?;
+                // Verificar compatibilidad de tipos si es posible
+                if !self.context.types.is_compatible(&value_t, &target_t)
+                    && target_t != NormalizedType::Unknown
+                    && value_t != NormalizedType::Unknown
+                {
+                    self.report_error(SemanticError::TypeMismatch {
+                        expected: target_t.to_string(),
+                        found: value_t.to_string(),
+                        context: "asignación".to_string(),
+                        span: expr.span.clone(),
+                    });
+                }
+                Ok(value_t)
+            }
             _ => Ok(NormalizedType::Unknown),
         };
         if let Ok(ref resolved_type) = ty {

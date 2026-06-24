@@ -362,7 +362,7 @@ impl IRBuilder {
     ) -> Result<(), IRLoweringError> {
         let mut fields = Vec::new();
 
-        // Heredar campos del padre
+        // Heredar campos del padre (solo atributos explícitos del padre)
         if let Some(parent_ref) = &type_decl.inherits {
             let parent_name = parent_ref.display_name();
             if let Some(parent_fields) = self.type_layouts.get(&parent_name).cloned() {
@@ -374,29 +374,7 @@ impl IRBuilder {
                 .insert(type_decl.name.clone(), parent_name);
         }
 
-        // Conjunto de nombres de atributos explícitos
-        let explicit_attrs: std::collections::HashSet<String> = type_decl
-            .members
-            .iter()
-            .filter_map(|m| {
-                if let TypeMember::Attribute(a) = m {
-                    Some(a.name.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Parámetros del tipo que NO son sobrescritos por atributos
-        for param in &type_decl.parameters {
-            if let Some(ann) = &param.annotation
-                && !explicit_attrs.contains(&param.name)
-            {
-                fields.push((param.name.clone(), ann.display_name()));
-            }
-        }
-
-        // Atributos explícitos
+        // Solo atributos explícitos son campos accesibles
         for member in &type_decl.members {
             if let TypeMember::Attribute(a) = member
                 && let Some(ann) = &a.annotation
@@ -407,7 +385,6 @@ impl IRBuilder {
 
         self.type_layouts.insert(type_decl.name.clone(), fields);
 
-        // Bajar métodos y constructor
         for member in &type_decl.members {
             if let TypeMember::Method(method) = member {
                 self.lower_method_declaration(&type_decl.name, method)?;
@@ -498,19 +475,7 @@ impl IRBuilder {
             self.define_variable(&name, id);
         }
 
-        // Conjunto de nombres de atributos explícitos
-        let explicit_attrs: std::collections::HashSet<String> = type_decl
-            .members
-            .iter()
-            .filter_map(|m| {
-                if let TypeMember::Attribute(a) = m {
-                    Some(a.name.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
+        // Campos heredados del padre
         let parent_fields = if let Some(parent_ref) = &type_decl.inherits {
             let parent_name = parent_ref.display_name();
             self.type_layouts
@@ -521,22 +486,21 @@ impl IRBuilder {
             Vec::new()
         };
 
-        let parent_field_count = parent_fields.len();
-        let own_param_count = type_decl
-            .parameters
-            .iter()
-            .filter(|p| p.annotation.is_some() && !explicit_attrs.contains(&p.name))
-            .count();
-        let attr_count = type_decl
+        // Atributos explícitos propios
+        let own_attrs: Vec<_> = type_decl
             .members
             .iter()
-            .filter(|m| matches!(m, TypeMember::Attribute(_)))
-            .count();
+            .filter_map(|m| {
+                if let TypeMember::Attribute(a) = m {
+                    Some(a)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        let total_size = std::cmp::max(
-            8,
-            ((parent_field_count + own_param_count + attr_count) as i64 + 1) * 8,
-        );
+        let total_fields = parent_fields.len() + own_attrs.len();
+        let total_size = std::cmp::max(8, (total_fields as i64 + 1) * 8);
 
         // Allocar
         let obj_ptr = self.fresh_value();
@@ -554,11 +518,9 @@ impl IRBuilder {
             .map(|arg| self.lower_expr(arg))
             .collect::<Result<_, _>>()?;
 
-        let mut field_idx = 0;
-
-        // 1. Campos heredados
-        for (_, field_type) in &parent_fields {
-            let offset = (field_idx + 1) as i64;
+        // 1. Guardar campos heredados
+        for (idx, (_, field_type)) in parent_fields.iter().enumerate() {
+            let offset = (idx + 1) as i64;
             let gep_target = self.fresh_value();
             self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
                 target: gep_target.clone(),
@@ -567,60 +529,35 @@ impl IRBuilder {
                 element_type: field_type.clone(),
             }))?;
             let arg_value = parent_arg_values
-                .get(field_idx)
+                .get(idx)
                 .cloned()
                 .unwrap_or_else(|| self.fresh_value());
             self.emit(IRInstruction::new(IRInstructionKind::Store {
                 address: IROperand::Value(gep_target),
                 value: IROperand::Value(arg_value),
             }))?;
-            field_idx += 1;
         }
 
-        // 2. Parámetros del tipo (que no son sobrescritos)
-        for param in &type_decl.parameters {
-            if let Some(ann) = &param.annotation
-                && !explicit_attrs.contains(&param.name)
-            {
-                let offset = (field_idx + 1) as i64;
-                let gep_target = self.fresh_value();
-                self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
-                    target: gep_target.clone(),
-                    base: IROperand::Value(obj_ptr.clone()),
-                    indices: vec![IROperand::Integer(offset)],
-                    element_type: ann.display_name(),
-                }))?;
-                let param_value = self
-                    .lookup_variable(&param.name)
-                    .unwrap_or_else(|| self.fresh_value());
-                self.emit(IRInstruction::new(IRInstructionKind::Store {
-                    address: IROperand::Value(gep_target),
-                    value: IROperand::Value(param_value),
-                }))?;
-                field_idx += 1;
-            }
-        }
-
-        // 3. Atributos explícitos
-        for member in &type_decl.members {
-            if let TypeMember::Attribute(attr) = member
-                && let Some(ann) = &attr.annotation
-            {
-                let offset = (field_idx + 1) as i64;
-                let gep_target = self.fresh_value();
-                self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
-                    target: gep_target.clone(),
-                    base: IROperand::Value(obj_ptr.clone()),
-                    indices: vec![IROperand::Integer(offset)],
-                    element_type: ann.display_name(),
-                }))?;
-                let init_value = self.lower_expr(&attr.initializer)?;
-                self.emit(IRInstruction::new(IRInstructionKind::Store {
-                    address: IROperand::Value(gep_target),
-                    value: IROperand::Value(init_value),
-                }))?;
-                field_idx += 1;
-            }
+        // 2. Guardar atributos propios
+        for (idx, attr) in own_attrs.iter().enumerate() {
+            let offset = ((parent_fields.len() + idx) + 1) as i64;
+            let field_type = attr
+                .annotation
+                .as_ref()
+                .map(|a| a.display_name())
+                .unwrap_or("ptr".to_string());
+            let gep_target = self.fresh_value();
+            self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                target: gep_target.clone(),
+                base: IROperand::Value(obj_ptr.clone()),
+                indices: vec![IROperand::Integer(offset)],
+                element_type: field_type.clone(),
+            }))?;
+            let init_value = self.lower_expr(&attr.initializer)?;
+            self.emit(IRInstruction::new(IRInstructionKind::Store {
+                address: IROperand::Value(gep_target),
+                value: IROperand::Value(init_value),
+            }))?;
         }
 
         self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
@@ -938,7 +875,6 @@ impl IRBuilder {
 
         match &target.kind {
             ExprKind::Identifier(name) => {
-                // REUTILIZAR el ID existente si la variable ya está definida
                 let assigned = self
                     .lookup_variable(name)
                     .unwrap_or_else(|| self.fresh_value());
@@ -950,9 +886,51 @@ impl IRBuilder {
                 self.define_variable(name, assigned.clone());
                 Ok(assigned)
             }
+            ExprKind::MemberAccess { object, member } => {
+                let object_value = self.lower_expr(object)?;
+
+                // Clonar layout ANTES de mutar self
+                let field_info: Option<(i64, String)> =
+                    if let Some(NormalizedType::Named(type_name)) =
+                        self.expr_types.get(&object.id).cloned()
+                    {
+                        self.type_layouts.get(&type_name).and_then(|fields| {
+                            fields
+                                .iter()
+                                .enumerate()
+                                .find(|(_, (name, _))| name == member)
+                                .map(|(idx, (_, field_type))| {
+                                    ((idx + 1) as i64, field_type.clone())
+                                })
+                        })
+                    } else {
+                        None
+                    };
+
+                if let Some((offset, field_type)) = field_info {
+                    let gep_target = self.fresh_value();
+                    self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                        target: gep_target.clone(),
+                        base: IROperand::Value(object_value),
+                        indices: vec![IROperand::Integer(offset)],
+                        element_type: field_type.clone(),
+                    }))?;
+                    self.emit(IRInstruction::new(IRInstructionKind::Store {
+                        address: IROperand::Value(gep_target),
+                        value: IROperand::Value(value_id.clone()),
+                    }))?;
+                    // Devolver el valor asignado
+                    Ok(value_id)
+                } else {
+                    Err(Self::error_at(
+                        expr.span.clone(),
+                        format!("Unknown field '{}' for assignment", member),
+                    ))
+                }
+            }
             _ => Err(Self::error_at(
                 expr.span.clone(),
-                "Only identifier assignments are supported in IR lowering",
+                "Only identifier or member-access assignments are supported in IR lowering",
             )),
         }
     }

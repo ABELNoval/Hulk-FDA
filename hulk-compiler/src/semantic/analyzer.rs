@@ -683,6 +683,54 @@ impl SemanticAnalyzer {
                     }
                 }
             }
+            ExprKind::For {
+                variable: _,
+                iterable,
+                body,
+            } => {
+                let iterable_type = self.analyze_expr(iterable)?;
+                let body_type = self.analyze_expr(body)?;
+                match self
+                    .context
+                    .expression_checker
+                    .check_for_expression(&iterable_type, &body_type)
+                {
+                    Ok(res) => Ok(res.type_),
+                    Err(e) => {
+                        self.report_error(e.clone());
+                        Ok(NormalizedType::Unknown)
+                    }
+                }
+            }
+            ExprKind::MemberAccess { object, member: _ } => {
+                self.analyze_expr(object)?;
+                Ok(NormalizedType::Unknown)
+            }
+            ExprKind::IndexAccess { object, index } => {
+                self.analyze_expr(object)?;
+                self.analyze_expr(index)?;
+                Ok(NormalizedType::Unknown)
+            }
+            ExprKind::Self_ => match self.context.symbols.lookup("self") {
+                Some(_) => Ok(NormalizedType::Unknown),
+                None => {
+                    self.report_error(SemanticError::UndeclaredVariable {
+                        name: "self".to_string(),
+                        span: expr.span.clone(),
+                    });
+                    Ok(NormalizedType::Unknown)
+                }
+            },
+            ExprKind::Base => match self.context.symbols.lookup("base") {
+                Some(_) => Ok(NormalizedType::Unknown),
+                None => {
+                    self.report_error(SemanticError::UndeclaredVariable {
+                        name: "base".to_string(),
+                        span: expr.span.clone(),
+                    });
+                    Ok(NormalizedType::Unknown)
+                }
+            },
             _ => Ok(NormalizedType::Unknown),
         };
         if let Ok(ref resolved_type) = ty {

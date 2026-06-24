@@ -101,6 +101,8 @@ pub struct IRBuilder {
     method_sigs: HashMap<String, (Option<String>, Vec<String>)>, // mangled -> (ret, param_tys)
     protocol_methods: std::collections::HashMap<String, Vec<String>>,
     type_protocols: std::collections::HashMap<String, Vec<String>>,
+    lambda_counter: usize,
+    lambda_functions: Vec<String>,
 }
 
 impl IRBuilder {
@@ -122,6 +124,8 @@ impl IRBuilder {
             current_method: None,
             protocol_methods: std::collections::HashMap::new(),
             type_protocols: std::collections::HashMap::new(),
+            lambda_counter: 0,
+            lambda_functions: Vec::new(),
         }
     }
 
@@ -865,6 +869,11 @@ impl IRBuilder {
                 binding,
                 iterable,
             } => self.lower_vector_comprehension(element_expr, binding, iterable, expr),
+            ExprKind::Lambda {
+                parameters,
+                return_type,
+                body,
+            } => self.lower_lambda(parameters, return_type, body),
         }
     }
 
@@ -1196,6 +1205,20 @@ impl IRBuilder {
             ));
         }
 
+        if let ExprKind::Lambda {
+            parameters,
+            return_type,
+            body,
+        } = &callee.kind
+        {
+            let lambda_id = self.lower_lambda(parameters, return_type, body)?;
+            let arg_values = args
+                .iter()
+                .map(|a| self.lower_expr(a))
+                .collect::<Result<Vec<_>, _>>()?;
+            return self.emit_call_with_values(&lambda_id.0, arg_values);
+        }
+
         let callee_name = self.resolve_callee(callee)?;
         let arg_values = args
             .iter()
@@ -1412,6 +1435,7 @@ impl IRBuilder {
 
         Ok(phi_target)
     }
+
     fn lower_while(
         &mut self,
         condition: &Expr,
@@ -1533,6 +1557,52 @@ impl IRBuilder {
         self.set_current_block(function_name, exit_name)?;
         let result = self.emit_constant_boolean(false, IRValueKind::Temporary)?;
         Ok(result)
+    }
+
+    fn lower_lambda(
+        &mut self,
+        parameters: &[crate::parser::ast::Parameter],
+        return_type: &Option<crate::parser::ast::TypeReference>,
+        body: &crate::parser::ast::Expr,
+    ) -> Result<IRValueId, IRLoweringError> {
+        let name = format!("__lambda_{}", self.lambda_counter);
+        self.lambda_counter += 1;
+
+        let ir_params = parameters
+            .iter()
+            .enumerate()
+            .map(|(i, p)| self.lower_parameter(p, i))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let param_bindings: Vec<(String, IRValueId)> = ir_params
+            .iter()
+            .map(|p| (p.id.0.clone(), p.id.clone()))
+            .collect();
+
+        let ret = return_type.as_ref().map(|t| t.display_name());
+
+        self.create_function(&name, ir_params, ret)?;
+        self.create_block_in_function(&name, "entry")?;
+        self.set_current_block(name.clone(), "entry")?;
+        self.push_scope();
+
+        for (name, id) in param_bindings {
+            self.define_variable(&name, id);
+        }
+
+        let body_val = self.lower_expr(body)?;
+        if !self.current_block_terminated()? {
+            self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
+                IROperand::Value(body_val),
+            ))))?;
+        }
+
+        self.pop_scope();
+        self.lambda_functions.push(name.clone());
+
+        // Retornar el nombre de la función como un "global" string
+        // En realidad, en el IR usamos un identificador que el backend resolverá
+        Ok(IRValueId::new(name))
     }
 
     fn lower_let(

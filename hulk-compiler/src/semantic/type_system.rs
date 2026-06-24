@@ -83,6 +83,7 @@ impl NormalizedType {
             TypeReferenceKind::Vector(type_ref) => {
                 Self::Vector(Box::new(Self::from_type_reference(type_ref)))
             }
+            TypeReferenceKind::Function(parameters, type_reference) => todo!(),
         }
     }
 
@@ -608,6 +609,15 @@ impl TypeEnvironment {
             TypeReferenceKind::Vector(inner) => {
                 let inner_nt = self.validate_type_reference(inner)?;
                 Ok(NormalizedType::Vector(Box::new(inner_nt)))
+            }
+            TypeReferenceKind::Function(params, ret) => {
+                for p in params {
+                    if let Some(ann) = &p.annotation {
+                        self.validate_type_reference(ann)?;
+                    }
+                }
+                self.validate_type_reference(ret)?;
+                Ok(NormalizedType::Unknown) // Los tipos función no se normalizan aún
             }
         }
     }

@@ -118,6 +118,7 @@ pub enum TypeReferenceKind {
     Named(String),
     Iterable(Box<TypeReference>),
     Vector(Box<TypeReference>),
+    Function(Vec<Parameter>, Box<TypeReference>),
 }
 
 impl TypeReference {
@@ -147,6 +148,21 @@ impl TypeReference {
             TypeReferenceKind::Named(name) => name.clone(),
             TypeReferenceKind::Iterable(inner) => format!("{}*", inner.display_name()),
             TypeReferenceKind::Vector(inner) => format!("{}[]", inner.display_name()),
+            TypeReferenceKind::Function(params, ret) => {
+                let p = params
+                    .iter()
+                    .map(|p| {
+                        let ann = p
+                            .annotation
+                            .as_ref()
+                            .map(|a| a.display_name())
+                            .unwrap_or("?".to_string());
+                        format!("{}: {}", p.name, ann)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({}) -> {}", p, ret.display_name())
+            }
         }
     }
 }
@@ -342,6 +358,22 @@ impl Expr {
         Self::new(ExprKind::VectorLiteral(elements), span)
     }
 
+    pub fn lambda(
+        parameters: Vec<Parameter>,
+        return_type: Option<TypeReference>,
+        body: Expr,
+        span: Span,
+    ) -> Self {
+        Self::new(
+            ExprKind::Lambda {
+                parameters,
+                return_type,
+                body: Box::new(body),
+            },
+            span,
+        )
+    }
+
     pub fn vector_comprehension(
         element_expr: Expr,
         binding: String,
@@ -447,6 +479,11 @@ pub enum ExprKind {
         element_expr: Box<Expr>,
         binding: String,
         iterable: Box<Expr>,
+    },
+    Lambda {
+        parameters: Vec<Parameter>,
+        return_type: Option<TypeReference>,
+        body: Box<Expr>,
     },
 }
 

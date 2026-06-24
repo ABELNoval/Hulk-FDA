@@ -33,7 +33,7 @@ use self::ast::{
 use self::ast::{ProtocolDeclaration, ProtocolMethodSignature};
 use crate::lexer::Token;
 use crate::lexer::TokenType;
-use crate::parser::ast::{BinaryOperator, ExprKind, UnaryOperator};
+use crate::parser::ast::{BinaryOperator, ExprKind, TypeReferenceKind, UnaryOperator};
 use crate::utils::errors::ParserError;
 use crate::utils::errors::span::Span;
 
@@ -831,6 +831,24 @@ impl Parser {
 
                 return self.parse_vector(token.span);
             }
+            TokenType::Function => {
+                let start_span = self.cursor.advance().span;
+                if self.expect(TokenType::LeftParen).is_err() {
+                    return Expr::literal(Literal::Number(0.0), start_span);
+                }
+                let parameters = self.parse_parameter_list();
+                let return_type = if self.cursor.match_token(&TokenType::Colon) {
+                    Some(self.parse_type_reference())
+                } else {
+                    None
+                };
+                if self.expect(TokenType::Arrow).is_err() {
+                    return Expr::literal(Literal::Number(0.0), start_span);
+                }
+                let body = self.parse_expression();
+                let span = start_span.merge(&body.span);
+                Expr::lambda(parameters, return_type, body, span)
+            }
             _ => {
                 self.error(ParserError::ExpectedExpression {
                     found: token.lexeme.clone(),
@@ -855,10 +873,72 @@ impl Parser {
     pub fn parse_type_reference(&mut self) -> TypeReference {
         let type_token = self.cursor.peek().clone();
 
-        let mut type_reference = match &type_token.token_type {
+        match &type_token.token_type {
+            TokenType::LeftParen => {
+                // Tipo función: (T1, T2) -> R
+                let start_span = self.cursor.advance().span;
+                let mut params = Vec::new();
+                if !self.cursor.check(&TokenType::RightParen) {
+                    loop {
+                        let param_name_tok = self.cursor.peek().clone();
+                        let param_name = match &param_name_tok.token_type {
+                            TokenType::Identifier(n) => {
+                                self.cursor.advance();
+                                n.clone()
+                            }
+                            _ => break,
+                        };
+                        let annotation = if self.cursor.match_token(&TokenType::Colon) {
+                            Some(self.parse_type_reference())
+                        } else {
+                            None
+                        };
+                        let span = param_name_tok.span.clone();
+                        params.push(Parameter::new(param_name, annotation, span));
+                        if !self.cursor.match_token(&TokenType::Comma) {
+                            break;
+                        }
+                    }
+                }
+                let close = match self.expect(TokenType::RightParen) {
+                    Ok(t) => t.span,
+                    Err(_) => return TypeReference::new("ErrorType".to_string(), start_span),
+                };
+                // Esperar -> (Minus + Greater)
+                if self.expect(TokenType::Minus).is_err() {
+                    return TypeReference::new("ErrorType".to_string(), start_span);
+                }
+                if self.expect(TokenType::Greater).is_err() {
+                    return TypeReference::new("ErrorType".to_string(), start_span);
+                }
+                let ret = self.parse_type_reference();
+                let span = start_span.merge(&ret.span);
+                TypeReference {
+                    kind: TypeReferenceKind::Function(params, Box::new(ret)),
+                    span,
+                }
+            }
             TokenType::Identifier(name) => {
                 self.cursor.advance();
-                TypeReference::new(name.clone(), type_token.span)
+                let mut type_ref = TypeReference::new(name.clone(), type_token.span);
+                loop {
+                    if self.cursor.check(&TokenType::Star) {
+                        let star = self.cursor.advance();
+                        let span = type_ref.span.merge(&star.span);
+                        type_ref = TypeReference::iterable_of(type_ref, span);
+                    } else if self.cursor.check(&TokenType::LeftBracket) {
+                        let lb = self.cursor.advance();
+                        let rb = match self.expect(TokenType::RightBracket) {
+                            Ok(t) => t,
+                            Err(_) => break,
+                        };
+                        let span = type_ref.span.merge(&lb.span).merge(&rb.span);
+                        type_ref = TypeReference::vector_of(type_ref, span);
+                    } else {
+                        break;
+                    }
+                }
+                type_ref
             }
             _ => {
                 self.error(ParserError::ExpectedType {
@@ -866,35 +946,7 @@ impl Parser {
                 });
                 TypeReference::new("ErrorType".to_string(), type_token.span)
             }
-        };
-
-        loop {
-            if self.cursor.check(&TokenType::Star) {
-                let star_token = self.cursor.advance();
-                let span = type_reference.span.merge(&star_token.span);
-                type_reference = TypeReference::iterable_of(type_reference, span);
-            } else if self.cursor.check(&TokenType::LeftBracket) {
-                let left_bracket = self.cursor.advance();
-
-                let right_bracket = match self.expect(TokenType::RightBracket) {
-                    Ok(token) => token,
-                    Err(_) => {
-                        self.synchronize();
-                        break;
-                    }
-                };
-
-                let span = type_reference
-                    .span
-                    .merge(&left_bracket.span)
-                    .merge(&right_bracket.span);
-                type_reference = TypeReference::vector_of(type_reference, span);
-            } else {
-                break;
-            }
         }
-
-        type_reference
     }
 
     pub fn cursor(&self) -> &TokenCursor {

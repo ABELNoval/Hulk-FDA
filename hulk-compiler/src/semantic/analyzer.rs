@@ -1162,6 +1162,48 @@ impl SemanticAnalyzer {
                 }
                 Ok(value_t)
             }
+            ExprKind::Lambda {
+                parameters,
+                return_type,
+                body,
+            } => {
+                self.context.symbols.enter_scope();
+                for p in parameters {
+                    let p_ty = p
+                        .annotation
+                        .as_ref()
+                        .map(|a| {
+                            self.context
+                                .types
+                                .validate_type_reference(a)
+                                .unwrap_or(NormalizedType::Unknown)
+                        })
+                        .unwrap_or(NormalizedType::Unknown);
+                    let sym = SymbolInfo::Parameter {
+                        name: p.name.clone(),
+                        type_ref: p_ty,
+                        span: p.span.clone(),
+                    };
+                    let _ = self.context.symbols.declare(sym);
+                }
+                let body_t = self.analyze_expr(body)?;
+                self.context.symbols.exit_scope();
+
+                // Verificar contra anotación de retorno si existe
+                if let Some(ret_ann) = return_type {
+                    let expected = self.context.types.validate_type_reference(ret_ann)?;
+                    if body_t != NormalizedType::Unknown
+                        && !self.context.types.is_compatible(&body_t, &expected)
+                    {
+                        self.report_error(SemanticError::ReturnTypeMismatch {
+                            function: "<lambda>".to_string(),
+                            expected: expected.to_string(),
+                            found: body_t.to_string(),
+                        });
+                    }
+                }
+                Ok(NormalizedType::Unknown)
+            }
             _ => Ok(NormalizedType::Unknown),
         };
         if let Ok(ref resolved_type) = ty {

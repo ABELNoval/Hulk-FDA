@@ -224,6 +224,7 @@ fn remap_operand(op: &IROperand, map: &HashMap<String, String>) -> IROperand {
         IROperand::Boolean(b) => IROperand::Boolean(*b),
 
         IROperand::Text(s) => IROperand::Text(s.clone()),
+        IROperand::Global(name) => IROperand::Global(name.clone()),
     }
 }
 
@@ -284,6 +285,28 @@ fn renaming_for_function(function: &mut IRFunction) {
                     for arg in arguments.iter_mut() {
                         *arg = remap_operand(arg, &mut map);
                     }
+                }
+                IRInstructionKind::CallIndirect {
+                    arguments,
+                    callee_ptr,
+                    target,
+                    ..
+                } => {
+                    // remap callee_ptr if it is a Value
+                    if let IROperand::Value(v) = callee_ptr
+                        && let Some(new) = map.get(&v.0)
+                    {
+                        *callee_ptr = IROperand::Value(IRValueId::new(new.clone()));
+                    }
+                    // remap arguments
+                    for arg in arguments.iter_mut() {
+                        *arg = remap_operand(arg, &map);
+                    }
+                    // remap target
+                    let old = target.0.clone();
+                    let new = svgen.next_value();
+                    map.insert(old.clone(), new.clone());
+                    *target = IRValueId::new(new);
                 }
                 _ => {}
             }

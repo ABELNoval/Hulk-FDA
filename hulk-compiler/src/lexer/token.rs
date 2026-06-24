@@ -75,9 +75,6 @@ pub enum TokenType {
     /// Palabra clave 'self' (referencia al objeto actual)
     SelfKeyword,
 
-    /// Palabra clave 'base' (referencia a la clase padre)
-    Base,
-
     // =========================================================================
     // Palabras clave - Protocolos (Sección 9)
     // =========================================================================
@@ -277,7 +274,6 @@ impl Token {
                 | TokenType::New
                 | TokenType::Inherits
                 | TokenType::SelfKeyword
-                | TokenType::Base
                 | TokenType::Protocol
                 | TokenType::Extends
                 | TokenType::Is
@@ -369,7 +365,6 @@ impl TokenType {
             "new" => Some(TokenType::New),
             "inherits" => Some(TokenType::Inherits),
             "self" => Some(TokenType::SelfKeyword),
-            "base" => Some(TokenType::Base),
 
             // Protocolos
             "protocol" => Some(TokenType::Protocol),
@@ -418,7 +413,6 @@ impl TokenType {
             TokenType::New => "new",
             TokenType::Inherits => "inherits",
             TokenType::SelfKeyword => "self",
-            TokenType::Base => "base",
 
             // Protocols
             TokenType::Protocol => "protocol",

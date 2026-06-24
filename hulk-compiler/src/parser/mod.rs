@@ -764,9 +764,14 @@ impl Parser {
             TokenType::False => Expr::literal(Literal::Boolean(false), span),
             TokenType::Pi => Expr::literal(Literal::Pi, span),
             TokenType::E => Expr::literal(Literal::E, span),
-            TokenType::Identifier(name) => Expr::identifier(name, span),
+            TokenType::Identifier(name) => {
+                if name == "base" && self.cursor.check(&TokenType::LeftParen) {
+                    Expr::base_expr(span)
+                } else {
+                    Expr::identifier(name, span)
+                }
+            }
             TokenType::SelfKeyword => Expr::self_expr(span),
-            TokenType::Base => Expr::base_expr(span),
             TokenType::New => {
                 let type_reference = self.parse_type_reference();
                 let mut arguments = Vec::new();

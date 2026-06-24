@@ -92,19 +92,14 @@ impl Default for SemanticContext {
 /// 3. Recopilación de errores
 pub struct SemanticAnalyzer {
     context: SemanticContext,
-    /// During analysis of a function body we may collect observed call signatures
-    /// for parameters/variables without annotations. This map stores for the
-    /// current function (if any) a mapping from identifier -> list of observed
-    /// argument type vectors (each call's argument types).
     current_inferred_signatures:
         Option<std::collections::HashMap<String, Vec<Vec<NormalizedType>>>>,
-    /// Observed call signatures across the whole program (useful to infer
-    /// parameter types from top-level calls before analyzing function bodies)
     observed_call_signatures: std::collections::HashMap<String, Vec<Vec<NormalizedType>>>,
     method_signatures: std::collections::HashMap<String, (Vec<NormalizedType>, NormalizedType)>,
     type_fields:
         std::collections::HashMap<String, std::collections::HashMap<String, NormalizedType>>,
     type_parents: std::collections::HashMap<String, String>,
+    current_method_context: Option<(String, String)>,
 }
 
 impl SemanticAnalyzer {
@@ -120,6 +115,7 @@ impl SemanticAnalyzer {
             method_signatures: std::collections::HashMap::new(),
             type_fields: std::collections::HashMap::new(),
             type_parents: std::collections::HashMap::new(),
+            current_method_context: None,
         }
     }
 
@@ -161,7 +157,7 @@ impl SemanticAnalyzer {
         for decl in &_program.declarations {
             match &decl.kind {
                 DeclarationKind::Type(td) => {
-                    // Build TypeInfo
+                    // 1. Extraer padre primero
                     let parent = match &td.inherits {
                         Some(tr) => match &tr.kind {
                             TypeReferenceKind::Named(name) => Some(name.clone()),
@@ -179,6 +175,16 @@ impl SemanticAnalyzer {
                     let mut properties: Vec<(String, crate::parser::ast::TypeReference)> =
                         Vec::new();
 
+                    // Mapa de parámetros del tipo para inferir tipos de atributos
+                    let param_types: std::collections::HashMap<
+                        String,
+                        crate::parser::ast::TypeReference,
+                    > = td
+                        .parameters
+                        .iter()
+                        .filter_map(|p| p.annotation.as_ref().map(|a| (p.name.clone(), a.clone())))
+                        .collect();
+
                     // Los parámetros del tipo SON atributos (accesibles via self)
                     for param in &td.parameters {
                         if let Some(ann) = &param.annotation {
@@ -192,28 +198,126 @@ impl SemanticAnalyzer {
                             TypeMember::Attribute(a) => {
                                 if let Some(ann) = &a.annotation {
                                     properties.push((a.name.clone(), ann.clone()));
+                                } else {
+                                    // Inferir tipo del inicializador si es un identificador conocido
+                                    let inferred =
+                                        if let ExprKind::Identifier(name) = &a.initializer.kind {
+                                            param_types.get(name).cloned()
+                                        } else {
+                                            None
+                                        };
+                                    if let Some(type_ref) = inferred {
+                                        properties.push((a.name.clone(), type_ref));
+                                    } else {
+                                        // Fallback: registrar como Unknown para que sea visible
+                                        properties.push((
+                                            a.name.clone(),
+                                            crate::parser::ast::TypeReference::new(
+                                                "Unknown".to_string(),
+                                                a.span.clone(),
+                                            ),
+                                        ));
+                                    }
                                 }
                             }
                         }
                     }
 
+                    // 3. AHORA construir type_info (ya existe `parent`, `methods`, `properties`)
                     let type_info = crate::semantic::type_system::TypeInfo {
                         name: td.name.clone(),
                         parameters: td.parameters.clone(),
-                        parent,
+                        parent: parent.clone(),
                         methods: methods.clone(),
                         properties: properties.clone(),
                         implemented_protocols: vec![],
                         span: crate::utils::errors::span::Span::default(),
                     };
 
-                    // Registrar relación de herencia
+                    // 4. Verificar overrides contra el padre (usamos `parent`, no `type_info.parent`)
+                    if let Some(parent_name) = &parent {
+                        for method in &methods {
+                            let parent_key = format!("{}_{}", parent_name, method.name);
+                            if let Some((parent_params, parent_ret)) =
+                                self.method_signatures.get(&parent_key).cloned()
+                            {
+                                let child_params: Vec<NormalizedType> = method
+                                    .parameters
+                                    .iter()
+                                    .map(|p| {
+                                        p.annotation
+                                            .as_ref()
+                                            .map(|a| {
+                                                self.context
+                                                    .types
+                                                    .validate_type_reference(a)
+                                                    .unwrap_or(NormalizedType::Unknown)
+                                            })
+                                            .unwrap_or(NormalizedType::Unknown)
+                                    })
+                                    .collect();
+                                let child_ret = method
+                                    .return_type
+                                    .as_ref()
+                                    .map(|r| {
+                                        self.context
+                                            .types
+                                            .validate_type_reference(r)
+                                            .unwrap_or(NormalizedType::Unknown)
+                                    })
+                                    .unwrap_or(NormalizedType::Unknown);
+
+                                if parent_params.len() != child_params.len() {
+                                    self.report_error(SemanticError::WrongArgumentCount {
+                                        function: format!("{}_{}", td.name, method.name),
+                                        expected: parent_params.len(),
+                                        found: child_params.len(),
+                                    });
+                                } else {
+                                    for (i, (p, c)) in
+                                        parent_params.iter().zip(child_params.iter()).enumerate()
+                                    {
+                                        if p != c && !p.is_unknown() && !c.is_unknown() {
+                                            self.report_error(
+                                                SemanticError::ArgumentTypeMismatch {
+                                                    function: format!(
+                                                        "{}_{}",
+                                                        td.name, method.name
+                                                    ),
+                                                    parameter_name: method
+                                                        .parameters
+                                                        .get(i)
+                                                        .map(|x| x.name.clone())
+                                                        .unwrap_or_default(),
+                                                    parameter_position: i,
+                                                    expected: p.to_string(),
+                                                    found: c.to_string(),
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                                if parent_ret != child_ret
+                                    && !parent_ret.is_unknown()
+                                    && !child_ret.is_unknown()
+                                {
+                                    self.report_error(SemanticError::ReturnTypeMismatch {
+                                        function: format!("{}_{}", td.name, method.name),
+                                        expected: parent_ret.to_string(),
+                                        found: child_ret.to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // 5. Registrar relación de herencia
                     if let Some(ref parent_name) = type_info.parent {
                         self.type_parents
                             .insert(type_info.name.clone(), parent_name.clone());
                     }
 
-                    // Registrar campos para lookup de MemberAccess
+                    // 6. Registrar campos para lookup de MemberAccess
                     let mut fields = std::collections::HashMap::new();
                     for (name, type_ref) in &properties {
                         let normalized = self
@@ -225,7 +329,7 @@ impl SemanticAnalyzer {
                     }
                     self.type_fields.insert(type_info.name.clone(), fields);
 
-                    // Registrar firmas de métodos para lookup de llamadas
+                    // 7. Registrar firmas de métodos para lookup de llamadas
                     for method in &methods {
                         let param_types: Vec<NormalizedType> = method
                             .parameters
@@ -256,11 +360,12 @@ impl SemanticAnalyzer {
                         self.method_signatures.insert(key, (param_types, ret_type));
                     }
 
-                    if let Err(e) = self.context.types.register_type(type_info) {
+                    // 8. Registrar el tipo en el entorno de tipos
+                    if let Err(e) = self.context.types.register_type(type_info.clone()) {
                         self.report_error(e);
                     }
 
-                    // declare type in symbol table
+                    // 9. Declarar el tipo en la tabla de símbolos
                     let sym = SymbolInfo::Type {
                         name: td.name.clone(),
                         span: crate::utils::errors::span::Span::default(),
@@ -269,25 +374,23 @@ impl SemanticAnalyzer {
                         self.report_error(e);
                     }
 
-                    // Pre-declarar métodos en la tabla de símbolos para que el cuerpo pueda referenciarlos
-                    for member in &td.members {
-                        if let TypeMember::Method(method) = member {
-                            let normalized_return = match &method.return_type {
-                                Some(type_ref) => self
-                                    .context
-                                    .types
-                                    .validate_type_reference(type_ref)
-                                    .unwrap_or(NormalizedType::Unknown),
-                                None => NormalizedType::Unknown,
-                            };
-                            let sym = SymbolInfo::Function {
-                                name: format!("{}_{}", td.name, method.name),
-                                parameters: method.parameters.clone(),
-                                return_type: normalized_return,
-                                span: crate::utils::errors::span::Span::default(),
-                            };
-                            let _ = self.context.symbols.declare(sym);
-                        }
+                    // 10. Pre-declarar métodos en la tabla de símbolos
+                    for method in &methods {
+                        let normalized_return = match &method.return_type {
+                            Some(type_ref) => self
+                                .context
+                                .types
+                                .validate_type_reference(type_ref)
+                                .unwrap_or(NormalizedType::Unknown),
+                            None => NormalizedType::Unknown,
+                        };
+                        let sym = SymbolInfo::Function {
+                            name: format!("{}_{}", td.name, method.name),
+                            parameters: method.parameters.clone(),
+                            return_type: normalized_return,
+                            span: crate::utils::errors::span::Span::default(),
+                        };
+                        let _ = self.context.symbols.declare(sym);
                     }
                 }
                 DeclarationKind::Protocol(pd) => {
@@ -477,6 +580,7 @@ impl SemanticAnalyzer {
                         }
 
                         // Analyze body
+                        self.current_method_context = Some((td.name.clone(), method.name.clone()));
                         let body_t = match self.analyze_expr(&method.body) {
                             Ok(t) => t,
                             Err(e) => {
@@ -484,6 +588,7 @@ impl SemanticAnalyzer {
                                 NormalizedType::Unknown
                             }
                         };
+                        self.current_method_context = None;
 
                         // Inferir tipo de retorno si no está anotado
                         if method.return_type.is_none() {
@@ -675,7 +780,23 @@ impl SemanticAnalyzer {
                         }
                     }
                 }
-                // Caso 3: Otro (no soportado)
+                // Caso 3 Base
+                else if let ExprKind::Base = &callee.kind {
+                    for arg in arguments {
+                        let _ = self.analyze_expr(arg)?;
+                    }
+                    // Inferir tipo de retorno del método del padre
+                    if let Some((type_name, method_name)) = &self.current_method_context
+                        && let Some(parent_name) = self.type_parents.get(type_name)
+                    {
+                        let parent_key = format!("{}_{}", parent_name, method_name);
+                        if let Some((_, ret_type)) = self.method_signatures.get(&parent_key) {
+                            return Ok(ret_type.clone());
+                        }
+                    }
+                    Ok(NormalizedType::Unknown)
+                }
+                // Caso 4: Otro (no soportado)
                 else {
                     self.report_error(SemanticError::UnsupportedFeature {
                         feature: "complex function calls".to_string(),

@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::ir::module::IRGlobal;
 use crate::parser::ast::{
     BinaryOperator, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal, Parameter,
     Program, TypeDeclaration, TypeMember, TypeReference, UnaryOperator,
@@ -87,6 +88,7 @@ pub struct IRBuilder {
     module: IRModule,
     current_function: Option<String>,
     current_block: Option<BasicBlockId>,
+    current_method: Option<(String, String)>,
     value_generator: SSAValueGenerator,
     block_counter: usize,
     scopes: Vec<HashMap<String, IRValueId>>,
@@ -94,6 +96,9 @@ pub struct IRBuilder {
     expr_types: HashMap<usize, NormalizedType>,
     type_layouts: HashMap<String, Vec<(String, String)>>, // type_name -> [(field_name, field_type)]
     type_parents: HashMap<String, String>,
+    type_methods: HashMap<String, Vec<String>>, // type -> [method names]
+    type_vtables: HashMap<String, Vec<(String, String)>>, // type -> [(method, mangled)]
+    method_sigs: HashMap<String, (Option<String>, Vec<String>)>, // mangled -> (ret, param_tys)
 }
 
 impl IRBuilder {
@@ -109,7 +114,80 @@ impl IRBuilder {
             expr_types: HashMap::new(),
             type_layouts: HashMap::new(),
             type_parents: HashMap::new(),
+            type_methods: HashMap::new(),
+            type_vtables: HashMap::new(),
+            method_sigs: HashMap::new(),
+            current_method: None,
         }
+    }
+
+    fn collect_type_methods(&mut self, program: &Program) {
+        for decl in &program.declarations {
+            if let DeclarationKind::Type(td) = &decl.kind {
+                let methods: Vec<String> = td
+                    .members
+                    .iter()
+                    .filter_map(|m| {
+                        if let TypeMember::Method(method) = m {
+                            Some(method.name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                self.type_methods.insert(td.name.clone(), methods);
+            }
+        }
+    }
+
+    fn build_vtable_list(&self, type_name: &str) -> Vec<(String, String)> {
+        let mut result = Vec::new();
+        if let Some(parent) = self.type_parents.get(type_name) {
+            result = self.build_vtable_list(parent);
+        }
+        if let Some(own) = self.type_methods.get(type_name) {
+            for method in own {
+                let mangled = format!("{}_{}", type_name, method);
+                if let Some(pos) = result.iter().position(|(m, _)| m == method) {
+                    result[pos] = (method.clone(), mangled); // override
+                } else {
+                    result.push((method.clone(), mangled));
+                }
+            }
+        }
+        result
+    }
+
+    fn emit_vtable_globals(&mut self) {
+        for (type_name, methods) in &self.type_vtables {
+            if methods.is_empty() {
+                continue;
+            }
+            let global_name = format!("__vtable_{}", type_name);
+            let func_names: Vec<String> = methods.iter().map(|(_, m)| m.clone()).collect();
+            self.module.add_global(IRGlobal {
+                name: global_name,
+                element_ty: "ptr".to_string(),
+                values: func_names,
+            });
+        }
+    }
+
+    fn get_vtable_index(&self, type_name: &str, method: &str) -> Option<usize> {
+        self.type_vtables
+            .get(type_name)?
+            .iter()
+            .position(|(m, _)| m == method)
+    }
+
+    fn get_method_signature(
+        &self,
+        type_name: &str,
+        method: &str,
+    ) -> Option<(Option<String>, Vec<String>)> {
+        let owner = self.find_method_owner(type_name, method)?;
+        let mangled = format!("{}_{}", owner, method);
+        self.method_sigs.get(&mangled).cloned()
     }
 
     pub fn create_function(
@@ -229,14 +307,37 @@ impl IRBuilder {
 
     pub fn lower_program(&mut self, program: &Program) -> Result<IRModule, IRLoweringError> {
         self.reset();
-
         self.module = IRModule::new(IRNaming::module_name("lowered"));
 
-        for declaration in &program.declarations {
-            if let DeclarationKind::Function(function) = &declaration.kind {
-                self.lower_function_declaration(function)?;
-            } else if let DeclarationKind::Type(type_decl) = &declaration.kind {
-                self.lower_type_declaration(type_decl)?;
+        // 1. Registrar layouts y firmas (sin todavía emitir constructores/métodos)
+        for decl in &program.declarations {
+            if let DeclarationKind::Type(td) = &decl.kind {
+                self.lower_type_declaration(td)?; // extrae lo que antes hacía lower_type_declaration
+            }
+        }
+
+        // 2. Recolectar métodos y construir vtables
+        self.collect_type_methods(program);
+        let type_names: Vec<String> = self.type_methods.keys().cloned().collect();
+        for name in &type_names {
+            let vtable = self.build_vtable_list(name);
+            self.type_vtables.insert(name.clone(), vtable);
+        }
+        self.emit_vtable_globals();
+
+        // 3. Ahora sí emitir funciones, métodos y constructores
+        for decl in &program.declarations {
+            match &decl.kind {
+                DeclarationKind::Function(f) => self.lower_function_declaration(f)?,
+                DeclarationKind::Type(td) => {
+                    for member in &td.members {
+                        if let TypeMember::Method(m) = member {
+                            self.lower_method_declaration(&td.name, m)?;
+                        }
+                    }
+                    self.lower_constructor(td)?;
+                }
+                _ => {}
             }
         }
 
@@ -250,10 +351,14 @@ impl IRBuilder {
     fn reset(&mut self) {
         self.current_function = None;
         self.current_block = None;
+        self.current_method = None;
         self.value_generator.reset();
         self.block_counter = 0;
         self.scopes.clear();
         self.loop_stack.clear();
+        self.type_methods.clear();
+        self.type_vtables.clear();
+        self.method_sigs.clear();
     }
 
     fn lower_entry_function(&mut self, program: &Program) -> Result<(), IRLoweringError> {
@@ -361,8 +466,6 @@ impl IRBuilder {
         type_decl: &TypeDeclaration,
     ) -> Result<(), IRLoweringError> {
         let mut fields = Vec::new();
-
-        // Heredar campos del padre (solo atributos explícitos del padre)
         if let Some(parent_ref) = &type_decl.inherits {
             let parent_name = parent_ref.display_name();
             if let Some(parent_fields) = self.type_layouts.get(&parent_name).cloned() {
@@ -373,25 +476,60 @@ impl IRBuilder {
             self.type_parents
                 .insert(type_decl.name.clone(), parent_name);
         }
+        // Mapa de parámetros del tipo para inferir tipos de atributos
+        let param_types: std::collections::HashMap<String, String> = type_decl
+            .parameters
+            .iter()
+            .filter_map(|p| {
+                p.annotation
+                    .as_ref()
+                    .map(|a| (p.name.clone(), a.display_name()))
+            })
+            .collect();
 
-        // Solo atributos explícitos son campos accesibles
+        // Todos los atributos explícitos son campos accesibles
         for member in &type_decl.members {
-            if let TypeMember::Attribute(a) = member
-                && let Some(ann) = &a.annotation
-            {
-                fields.push((a.name.clone(), ann.display_name()));
+            if let TypeMember::Attribute(a) = member {
+                let field_type = a
+                    .annotation
+                    .as_ref()
+                    .map(|ann| ann.display_name())
+                    .unwrap_or_else(|| {
+                        // Inferir tipo del inicializador si es un identificador conocido
+                        if let ExprKind::Identifier(name) = &a.initializer.kind
+                            && let Some(ty) = param_types.get(name)
+                        {
+                            return ty.clone();
+                        }
+                        // Fallback a expr_types del semantic analyzer
+                        self.expr_types
+                            .get(&a.initializer.id)
+                            .map(|t| t.to_string())
+                            .unwrap_or("ptr".to_string())
+                    });
+                fields.push((a.name.clone(), field_type));
             }
         }
-
         self.type_layouts.insert(type_decl.name.clone(), fields);
 
+        // Registrar firmas de métodos para poder usarlas en CallIndirect
         for member in &type_decl.members {
             if let TypeMember::Method(method) = member {
-                self.lower_method_declaration(&type_decl.name, method)?;
+                let mangled = format!("{}_{}", type_decl.name, method.name);
+                let ret = method.return_type.as_ref().map(|t| t.display_name());
+                let params = method
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        p.annotation
+                            .as_ref()
+                            .map(|a| a.display_name())
+                            .unwrap_or("ptr".to_string())
+                    })
+                    .collect();
+                self.method_sigs.insert(mangled, (ret, params));
             }
         }
-        self.lower_constructor(type_decl)?;
-
         Ok(())
     }
 
@@ -439,7 +577,7 @@ impl IRBuilder {
         for (name, id) in scope_bindings {
             self.define_variable(&name, id);
         }
-
+        self.current_method = Some((type_name.to_string(), method.name.clone()));
         let body_value = self.lower_expr(&method.body)?;
         if !self.current_block_terminated()? {
             self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
@@ -518,6 +656,19 @@ impl IRBuilder {
             .map(|arg| self.lower_expr(arg))
             .collect::<Result<_, _>>()?;
 
+        // Store vtable pointer at object offset 0
+        let vtable_global = format!("__vtable_{}", type_decl.name);
+        let vtable_addr = self.fresh_value();
+        self.emit(IRInstruction::new(IRInstructionKind::Assign {
+            target: vtable_addr.clone(),
+            value: IROperand::Global(vtable_global),
+            original: None,
+        }))?;
+        self.emit(IRInstruction::new(IRInstructionKind::Store {
+            address: IROperand::Value(obj_ptr.clone()),
+            value: IROperand::Value(vtable_addr),
+        }))?;
+
         // 1. Guardar campos heredados
         for (idx, (_, field_type)) in parent_fields.iter().enumerate() {
             let offset = (idx + 1) as i64;
@@ -538,6 +689,16 @@ impl IRBuilder {
             }))?;
         }
 
+        let param_types: std::collections::HashMap<String, String> = type_decl
+            .parameters
+            .iter()
+            .filter_map(|p| {
+                p.annotation
+                    .as_ref()
+                    .map(|a| (p.name.clone(), a.display_name()))
+            })
+            .collect();
+
         // 2. Guardar atributos propios
         for (idx, attr) in own_attrs.iter().enumerate() {
             let offset = ((parent_fields.len() + idx) + 1) as i64;
@@ -545,7 +706,18 @@ impl IRBuilder {
                 .annotation
                 .as_ref()
                 .map(|a| a.display_name())
-                .unwrap_or("ptr".to_string());
+                .unwrap_or_else(|| {
+                    // Inferir tipo del inicializador si es un identificador cocido
+                    if let ExprKind::Identifier(name) = &attr.initializer.kind
+                        && let Some(ty) = param_types.get(name)
+                    {
+                        return ty.clone();
+                    }
+                    self.expr_types
+                        .get(&attr.initializer.id)
+                        .map(|t| t.to_string())
+                        .unwrap_or("ptr".to_string())
+                });
             let gep_target = self.fresh_value();
             self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
                 target: gep_target.clone(),
@@ -806,13 +978,64 @@ impl IRBuilder {
     }
 
     fn lower_call(&mut self, callee: &Expr, args: &[Expr]) -> Result<IRValueId, IRLoweringError> {
-        // Caso especial: callee es MemberAccess → llamada a método
         if let ExprKind::MemberAccess { object, member } = &callee.kind {
             let obj_val = self.lower_expr(object)?;
-
-            // Obtener tipo del objeto
             let obj_type = self.expr_types.get(&object.id).cloned();
+
             if let Some(NormalizedType::Named(type_name)) = obj_type {
+                // Si el método está en la vtable, usar dispatch dinámico
+                if let Some(method_idx) = self.get_vtable_index(&type_name, member) {
+                    // 1. Cargar puntero a vtable desde offset 0 del objeto
+                    let vtable_ptr = self.fresh_value();
+                    self.emit(IRInstruction::new(IRInstructionKind::Load {
+                        target: vtable_ptr.clone(),
+                        address: IROperand::Value(obj_val.clone()),
+                        ty: "ptr".to_string(),
+                    }))?;
+
+                    // 2. GEP al slot del método (element_type = ptr)
+                    let slot_ptr = self.fresh_value();
+                    self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                        target: slot_ptr.clone(),
+                        base: IROperand::Value(vtable_ptr),
+                        indices: vec![IROperand::Integer(method_idx as i64)],
+                        element_type: "ptr".to_string(),
+                    }))?;
+
+                    // 3. Cargar el puntero a función
+                    let method_ptr = self.fresh_value();
+                    self.emit(IRInstruction::new(IRInstructionKind::Load {
+                        target: method_ptr.clone(),
+                        address: IROperand::Value(slot_ptr),
+                        ty: "ptr".to_string(),
+                    }))?;
+
+                    // 4. Preparar argumentos (self primero)
+                    let mut arg_values = vec![obj_val];
+                    for arg in args {
+                        arg_values.push(self.lower_expr(arg)?);
+                    }
+
+                    // 5. Obtener firma para el indirect call
+                    let (ret, mut params) = self
+                        .get_method_signature(&type_name, member)
+                        .unwrap_or((None, vec![]));
+                    let mut param_types = vec!["ptr".to_string()]; // self
+                    param_types.append(&mut params);
+
+                    let target = self.fresh_value();
+                    self.emit(IRInstruction::new(IRInstructionKind::CallIndirect {
+                        target: target.clone(),
+                        callee_ptr: IROperand::Value(method_ptr),
+                        arguments: arg_values.into_iter().map(IROperand::Value).collect(),
+                        return_type: ret,
+                        param_types,
+                        original: Some(member.clone()),
+                    }))?;
+                    return Ok(target);
+                }
+
+                // Fallback a dispatch estático (built-ins, etc.)
                 let owner = self
                     .find_method_owner(&type_name, member)
                     .unwrap_or_else(|| type_name.clone());
@@ -824,12 +1047,32 @@ impl IRBuilder {
                 return self.emit_call_with_values(&mangled_name, arg_values);
             }
 
-            // Fallback
+            // Fallback genérico
             let mut arg_values = vec![obj_val];
             for arg in args {
                 arg_values.push(self.lower_expr(arg)?);
             }
             return self.emit_call_with_values(&format!("member.{}", member), arg_values);
+        }
+
+        // Caso especial: base(args) -> llamar al método del padre con el mismo nombre
+        if let ExprKind::Base = &callee.kind {
+            if let Some((type_name, method_name)) = &self.current_method
+                && let Some(parent_name) = self.type_parents.get(type_name)
+            {
+                let mangled_name = format!("{}_{}", parent_name, method_name);
+                let mut arg_values = vec![
+                    self.lookup_variable("self")
+                        .unwrap_or_else(|| self.fresh_value()),
+                ];
+                for arg in args {
+                    arg_values.push(self.lower_expr(arg)?);
+                }
+                return self.emit_call_with_values(&mangled_name, arg_values);
+            }
+            return Err(IRLoweringError::new(
+                "base() can only be used inside a method that overrides a parent method",
+            ));
         }
 
         let callee_name = self.resolve_callee(callee)?;

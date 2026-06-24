@@ -163,6 +163,7 @@ mod real {
     fn lower_operand<'ctx>(
         ctx: &'ctx Context,
         builder: &inkwell::builder::Builder<'ctx>,
+        llvm_mod: &Module<'ctx>,
         allocas: &HashMap<String, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
         operand: &crate::ir::IROperand,
     ) -> CodegenResult<BasicValueEnum<'ctx>> {
@@ -199,8 +200,28 @@ mod real {
                         }
                     })?
                 } else {
+                    eprintln!("DEBUG: value_id='{}'", value_id.0);
+                    eprintln!(
+                        "DEBUG: allocas keys: {:?}",
+                        allocas.keys().collect::<Vec<_>>()
+                    );
                     return Err(CodegenError::BackendFailure {
                         message: format!("value '{}' not found in allocas", value_id.0),
+                    });
+                }
+            }
+            crate::ir::IROperand::Global(name) => {
+                if let Some(global) = llvm_mod.get_global(name) {
+                    let ptr_val = unsafe {
+                        std::mem::transmute_copy::<
+                            inkwell::values::GlobalValue<'ctx>,
+                            inkwell::values::PointerValue<'ctx>,
+                        >(&global)
+                    };
+                    ptr_val.into()
+                } else {
+                    return Err(CodegenError::BackendFailure {
+                        message: format!("global '{}' not found", name),
                     });
                 }
             }
@@ -283,6 +304,7 @@ mod real {
             crate::ir::IROperand::Float(_) => ctx.f64_type().into(),
             crate::ir::IROperand::Boolean(_) => ctx.bool_type().into(),
             crate::ir::IROperand::Text(_) => ctx.ptr_type(AddressSpace::default()).into(),
+            crate::ir::IROperand::Global(_) => ctx.ptr_type(AddressSpace::default()).into(),
             crate::ir::IROperand::Value(value_id) => {
                 let raw_key = value_id.0.as_str();
                 let trimmed_key = raw_key.trim_start_matches('%');
@@ -382,6 +404,7 @@ mod real {
                                         crate::ir::IROperand::Boolean(_) => "i1".to_string(),
                                         crate::ir::IROperand::Text(_) => "ptr".to_string(),
                                         crate::ir::IROperand::Value(_) => "double".to_string(),
+                                        crate::ir::IROperand::Global(_) => "ptr".to_string(),
                                     })
                                     .collect();
                                 let ret = if params.iter().any(|p| p == "double") {
@@ -421,6 +444,44 @@ mod real {
                 let _ = llvm_mod.add_function(&function.name, fn_type, None);
             }
 
+            // Pre-declare all module functions so forward references work
+            for function in &module.functions {
+                let param_types: Vec<BasicTypeEnum> = function
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        map_type(&ctx, p.ty.as_deref()).unwrap_or_else(|| ctx.f64_type().into())
+                    })
+                    .collect();
+                let fn_type =
+                    function_type_for(&ctx, function.return_type.as_deref(), &param_types);
+                let _ = llvm_mod.add_function(&function.name, fn_type, None);
+            }
+
+            // Emit vtable globals  <-- AQUÍ VA AHORA
+            for global in &module.globals {
+                let ptr_ty = ctx.ptr_type(AddressSpace::default());
+                let array_ty = ptr_ty.array_type(global.values.len() as u32);
+                let llvm_global =
+                    llvm_mod.add_global(array_ty, Some(AddressSpace::default()), &global.name);
+                let fn_ptrs: Vec<_> = global
+                    .values
+                    .iter()
+                    .map(|name| {
+                        llvm_mod
+                            .get_function(name)
+                            .map(|f| f.as_global_value().as_pointer_value())
+                            .unwrap_or_else(|| {
+                                // Fallback: null pointer si la función no existe
+                                // (no debería pasar si la pre-declaración ya corrió)
+                                ctx.ptr_type(AddressSpace::default()).const_null().into()
+                            })
+                    })
+                    .collect();
+                let const_array = ptr_ty.const_array(&fn_ptrs);
+                llvm_global.set_initializer(&const_array);
+            }
+
             for function in &module.functions {
                 let param_types: Vec<BasicTypeEnum> = function
                     .parameters
@@ -458,6 +519,10 @@ mod real {
                 for (idx, param) in function.parameters.iter().enumerate() {
                     if let Some(llvm_param) = fn_val.get_nth_param(idx as u32) {
                         let param_name = param.id.0.trim_start_matches('%');
+                        eprintln!(
+                            "DEBUG: mat param '{}' for fn '{}'",
+                            param_name, function.name
+                        );
                         llvm_param.set_name(param_name);
                         let param_type = map_type(&ctx, param.ty.as_deref())
                             .unwrap_or_else(|| llvm_param.get_type().into());
@@ -475,6 +540,11 @@ mod real {
                         let prefixed_param = format!("%{}", canonical_param);
                         allocas.insert(canonical_param, (slot, param_type));
                         allocas.insert(prefixed_param, (slot, param_type));
+                    } else {
+                        eprintln!(
+                            "DEBUG: NO param {} for fn '{}' (fn_type mismatch?)",
+                            idx, function.name
+                        );
                     }
                 }
 
@@ -552,7 +622,7 @@ mod real {
                         match &instr.kind {
                             IRInstructionKind::Phi { .. } => {}
                             IRInstructionKind::Return(Some(op)) => {
-                                let val = lower_operand(&ctx, &builder, &allocas, op)?;
+                                let val = lower_operand(&ctx, &builder, &llvm_mod, &allocas, op)?;
                                 builder.build_return(Some(&val)).map_err(|err| {
                                     CodegenError::BackendFailure {
                                         message: format!("failed to emit return: {:?}", err),
@@ -568,7 +638,8 @@ mod real {
                             }
                             IRInstructionKind::Assign { target, value, .. } => {
                                 let name = target.0.trim_start_matches('%');
-                                let val = lower_operand(&ctx, &builder, &allocas, value)?;
+                                let val =
+                                    lower_operand(&ctx, &builder, &llvm_mod, &allocas, value)?;
                                 let ptr =
                                     ensure_slot(&builder, name, val.get_type(), &mut allocas)?;
                                 builder.build_store(ptr, val).map_err(|err| {
@@ -583,8 +654,8 @@ mod real {
                                 left,
                                 right,
                             } => {
-                                let l = lower_operand(&ctx, &builder, &allocas, left)?;
-                                let r = lower_operand(&ctx, &builder, &allocas, right)?;
+                                let l = lower_operand(&ctx, &builder, &llvm_mod, &allocas, left)?;
+                                let r = lower_operand(&ctx, &builder, &llvm_mod, &allocas, right)?;
                                 let both_bool = matches!(l.get_type(), BasicTypeEnum::IntType(_))
                                     && matches!(r.get_type(), BasicTypeEnum::IntType(_));
                                 println!(
@@ -1064,7 +1135,7 @@ mod real {
                                     })?;
                                 let argsv: Vec<BasicValueEnum> = arguments
                                     .iter()
-                                    .map(|a| lower_operand(&ctx, &builder, &allocas, a))
+                                    .map(|a| lower_operand(&ctx, &builder, &llvm_mod, &allocas, a))
                                     .collect::<Result<_, _>>()?;
                                 let call_site = builder
                                     .build_call(
@@ -1098,6 +1169,58 @@ mod real {
                                     }
                                 }
                             }
+                            IRInstructionKind::CallIndirect {
+                                target,
+                                callee_ptr,
+                                arguments,
+                                return_type,
+                                param_types,
+                                ..
+                            } => {
+                                let ptr_val =
+                                    lower_operand(&ctx, &builder, &llvm_mod, &allocas, callee_ptr)?;
+                                let fn_ptr = ptr_val.into_pointer_value();
+
+                                let argsv: Vec<BasicValueEnum> = arguments
+                                    .iter()
+                                    .map(|a| lower_operand(&ctx, &builder, &llvm_mod, &allocas, a))
+                                    .collect::<Result<_, _>>()?;
+
+                                let llvm_param_types: Vec<BasicTypeEnum> = param_types
+                                    .iter()
+                                    .map(|p| {
+                                        map_type(&ctx, Some(p))
+                                            .unwrap_or_else(|| ctx.f64_type().into())
+                                    })
+                                    .collect();
+
+                                let fn_type = function_type_for(
+                                    &ctx,
+                                    return_type.as_deref(),
+                                    &llvm_param_types,
+                                );
+                                let metadata_args = basic_metadata_values(&argsv);
+
+                                let call_site = builder
+                                    .build_indirect_call(fn_type, fn_ptr, &metadata_args, "calltmp")
+                                    .map_err(|err| CodegenError::BackendFailure {
+                                        message: format!("failed indirect call: {:?}", err),
+                                    })?;
+
+                                let name = target.0.trim_start_matches('%');
+                                if let Some(rv) = call_site.try_as_basic_value().basic() {
+                                    let slot =
+                                        ensure_slot(&builder, name, rv.get_type(), &mut allocas)?;
+                                    builder.build_store(slot, rv).map_err(|err| {
+                                        CodegenError::BackendFailure {
+                                            message: format!(
+                                                "failed to store indirect call result: {:?}",
+                                                err
+                                            ),
+                                        }
+                                    })?;
+                                }
+                            }
                             IRInstructionKind::Jump { target } => {
                                 let dest = *block_map.get(&target.0).ok_or_else(|| {
                                     CodegenError::BackendFailure {
@@ -1118,7 +1241,8 @@ mod real {
                                 then_block,
                                 else_block,
                             } => {
-                                let cond = lower_operand(&ctx, &builder, &allocas, condition)?;
+                                let cond =
+                                    lower_operand(&ctx, &builder, &llvm_mod, &allocas, condition)?;
                                 let then_bb = *block_map.get(&then_block.0).ok_or_else(|| {
                                     CodegenError::BackendFailure {
                                         message: format!(
@@ -1150,7 +1274,8 @@ mod real {
                                 op,
                                 operand,
                             } => {
-                                let val = lower_operand(&ctx, &builder, &allocas, operand)?;
+                                let val =
+                                    lower_operand(&ctx, &builder, &llvm_mod, &allocas, operand)?;
                                 let use_float_ops =
                                     matches!(val.get_type(), BasicTypeEnum::FloatType(_));
                                 let res: BasicValueEnum = match op {
@@ -1187,13 +1312,16 @@ mod real {
                                 indices,
                                 element_type,
                             } => {
-                                let base_val = lower_operand(&ctx, &builder, &allocas, base)?;
+                                let base_val =
+                                    lower_operand(&ctx, &builder, &llvm_mod, &allocas, base)?;
                                 let base_ptr = base_val.into_pointer_value();
 
                                 let idx_vals: Vec<_> = indices
                                     .iter()
                                     .map(|idx| {
-                                        let v = lower_operand(&ctx, &builder, &allocas, idx)?;
+                                        let v = lower_operand(
+                                            &ctx, &builder, &llvm_mod, &allocas, idx,
+                                        )?;
                                         Ok::<_, CodegenError>(
                                             ctx.i64_type().const_int(
                                                 v.into_int_value()
@@ -1237,8 +1365,10 @@ mod real {
                                 })?;
                             }
                             IRInstructionKind::Store { address, value } => {
-                                let addr_val = lower_operand(&ctx, &builder, &allocas, address)?;
-                                let val = lower_operand(&ctx, &builder, &allocas, value)?;
+                                let addr_val =
+                                    lower_operand(&ctx, &builder, &llvm_mod, &allocas, address)?;
+                                let val =
+                                    lower_operand(&ctx, &builder, &llvm_mod, &allocas, value)?;
                                 let ptr = addr_val.into_pointer_value();
                                 builder.build_store(ptr, val).map_err(|err| {
                                     CodegenError::BackendFailure {
@@ -1251,7 +1381,8 @@ mod real {
                                 address,
                                 ty,
                             } => {
-                                let addr_val = lower_operand(&ctx, &builder, &allocas, address)?;
+                                let addr_val =
+                                    lower_operand(&ctx, &builder, &llvm_mod, &allocas, address)?;
                                 let ptr = addr_val.into_pointer_value();
                                 let load_ty = map_type(&ctx, Some(ty))
                                     .unwrap_or_else(|| ctx.f64_type().into());
@@ -1288,6 +1419,7 @@ mod real {
                     let incoming_value = lower_operand(
                         &ctx,
                         &phi_incoming_builder,
+                        &llvm_mod,
                         &allocas,
                         &crate::ir::IROperand::Value(value_id.clone()),
                     )?;

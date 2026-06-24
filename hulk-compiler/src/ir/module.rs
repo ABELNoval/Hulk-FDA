@@ -164,9 +164,17 @@ impl IRFunction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct IRGlobal {
+    pub name: String,
+    pub element_ty: String,  // ej. "ptr"
+    pub values: Vec<String>, // nombres de función para la vtable
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct IRModule {
     pub name: String,
     pub functions: Vec<IRFunction>,
+    pub globals: Vec<IRGlobal>,
 }
 
 impl IRModule {
@@ -174,7 +182,12 @@ impl IRModule {
         Self {
             name: name.into(),
             functions: Vec::new(),
+            globals: Vec::new(),
         }
+    }
+
+    pub fn add_global(&mut self, global: IRGlobal) {
+        self.globals.push(global);
     }
 
     pub fn add_function(&mut self, function: IRFunction) {

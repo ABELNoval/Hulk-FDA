@@ -39,6 +39,7 @@ pub enum IROperand {
     Float(f64),
     Boolean(bool),
     Text(String),
+    Global(String),
 }
 
 impl IROperand {
@@ -49,6 +50,7 @@ impl IROperand {
             IROperand::Float(f) => f.to_string(),
             IROperand::Boolean(b) => b.to_string(),
             IROperand::Text(s) => format!("\"{}\"", s),
+            IROperand::Global(s) => format!("@{}", s),
         }
     }
 }
@@ -106,6 +108,14 @@ pub enum IRInstructionKind {
         target: IRValueId,
         address: IROperand,
         ty: String,
+    },
+    CallIndirect {
+        target: IRValueId,
+        callee_ptr: IROperand,
+        arguments: Vec<IROperand>,
+        return_type: Option<String>,
+        param_types: Vec<String>,
+        original: Option<String>,
     },
 }
 
@@ -188,6 +198,19 @@ impl IRInstruction {
                 vals.push(v.clone());
             }
             IRInstructionKind::Call { arguments, .. } => {
+                vals.extend(arguments.iter().filter_map(|arg| match arg {
+                    IROperand::Value(a) => Some(a.clone()),
+                    _ => None,
+                }));
+            }
+            IRInstructionKind::CallIndirect {
+                callee_ptr,
+                arguments,
+                ..
+            } => {
+                if let IROperand::Value(v) = callee_ptr {
+                    vals.push(v.clone());
+                }
                 vals.extend(arguments.iter().filter_map(|arg| match arg {
                     IROperand::Value(a) => Some(a.clone()),
                     _ => None,
@@ -435,6 +458,24 @@ impl IRInstruction {
                 target, address, ..
             } => {
                 format!("{} = load {}", target.0, address.fmt_display())
+            }
+            IRInstructionKind::CallIndirect {
+                target,
+                callee_ptr,
+                arguments,
+                ..
+            } => {
+                let args = arguments
+                    .iter()
+                    .map(|a| a.fmt_display())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "{} = call_indirect {}({})",
+                    target.0,
+                    callee_ptr.fmt_display(),
+                    args
+                )
             }
             IRInstructionKind::Nop => "nop".to_string(),
         }

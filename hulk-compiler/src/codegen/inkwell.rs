@@ -329,6 +329,34 @@ mod real {
             use crate::ir::IRInstructionKind;
             let mut extern_prototypes: HashMap<String, (String, Vec<String>)> = HashMap::new();
 
+            let mut extern_prototypes: HashMap<String, (String, Vec<String>)> = HashMap::new();
+
+            // Funciones conocidas del runtime con firmas fijas
+            let known_functions: HashMap<String, (String, Vec<String>)> = [
+                ("hulk_alloc", ("ptr", vec!["i64"])),
+                ("hulk_free", ("void", vec!["ptr"])),
+                ("hulk_strlen", ("i64", vec!["ptr"])),
+                ("print_number", ("double", vec!["double"])),
+                ("print_string", ("ptr", vec!["ptr"])),
+                ("print_bool", ("i1", vec!["i1"])),
+                ("hulk_num_to_str", ("ptr", vec!["double"])),
+                ("hulk_concat", ("ptr", vec!["ptr", "ptr"])),
+                ("hulk_concat_space", ("ptr", vec!["ptr", "ptr"])),
+                ("strcmp", ("i32", vec!["ptr", "ptr"])),
+                ("pow", ("double", vec!["double", "double"])),
+            ]
+            .iter()
+            .map(|(name, (ret, params))| {
+                (
+                    name.to_string(),
+                    (
+                        ret.to_string(),
+                        params.iter().map(|s| s.to_string()).collect(),
+                    ),
+                )
+            })
+            .collect();
+
             for func in &module.functions {
                 for block in &func.blocks {
                     for instr in &block.instructions {
@@ -339,23 +367,32 @@ mod real {
                             if module.function(&callee).is_some() {
                                 continue;
                             }
-                            let params = arguments
-                                .iter()
-                                .map(|a| match a {
-                                    crate::ir::IROperand::Float(_) => "double".to_string(),
-                                    crate::ir::IROperand::Boolean(_) => "i1".to_string(),
-                                    crate::ir::IROperand::Text(_) => "ptr".to_string(),
-                                    _ => "double".to_string(),
-                                })
-                                .collect::<Vec<_>>();
-                            let ret = if params.iter().any(|p| p == "double") {
-                                "double"
+
+                            if let Some((ret, params)) = known_functions.get(callee) {
+                                extern_prototypes
+                                    .entry(callee.clone())
+                                    .or_insert((ret.clone(), params.clone()));
                             } else {
-                                "i64"
-                            };
-                            extern_prototypes
-                                .entry(callee.clone())
-                                .or_insert((ret.to_string(), params));
+                                // Inferir para funciones desconocidas
+                                let params: Vec<String> = arguments
+                                    .iter()
+                                    .map(|a| match a {
+                                        crate::ir::IROperand::Float(_) => "double".to_string(),
+                                        crate::ir::IROperand::Integer(_) => "i64".to_string(),
+                                        crate::ir::IROperand::Boolean(_) => "i1".to_string(),
+                                        crate::ir::IROperand::Text(_) => "ptr".to_string(),
+                                        crate::ir::IROperand::Value(_) => "double".to_string(),
+                                    })
+                                    .collect();
+                                let ret = if params.iter().any(|p| p == "double") {
+                                    "double"
+                                } else {
+                                    "i64"
+                                };
+                                extern_prototypes
+                                    .entry(callee.clone())
+                                    .or_insert((ret.to_string(), params));
+                            }
                         }
                     }
                 }
@@ -1141,6 +1178,94 @@ mod real {
                                 builder.build_store(ptr, res).map_err(|err| {
                                     CodegenError::BackendFailure {
                                         message: format!("failed to store unary result: {:?}", err),
+                                    }
+                                })?;
+                            }
+                            IRInstructionKind::GetElementPtr {
+                                target,
+                                base,
+                                indices,
+                                element_type,
+                            } => {
+                                let base_val = lower_operand(&ctx, &builder, &allocas, base)?;
+                                let base_ptr = base_val.into_pointer_value();
+
+                                let idx_vals: Vec<_> = indices
+                                    .iter()
+                                    .map(|idx| {
+                                        let v = lower_operand(&ctx, &builder, &allocas, idx)?;
+                                        Ok::<_, CodegenError>(
+                                            ctx.i64_type().const_int(
+                                                v.into_int_value()
+                                                    .get_zero_extended_constant()
+                                                    .unwrap_or(0),
+                                                false,
+                                            ),
+                                        )
+                                    })
+                                    .collect::<Result<_, _>>()?;
+
+                                // Parsear element_type a un BasicTypeEnum
+                                let elem_ty = map_type(&ctx, Some(element_type))
+                                    .unwrap_or_else(|| ctx.i8_type().into());
+
+                                let ptr = unsafe {
+                                    builder.build_gep(
+                                        elem_ty,
+                                        base_ptr,
+                                        &idx_vals,
+                                        target.0.trim_start_matches('%'),
+                                    )
+                                }
+                                .map_err(|err| {
+                                    CodegenError::BackendFailure {
+                                        message: format!("failed to emit gep: {:?}", err),
+                                    }
+                                })?;
+
+                                let name = target.0.trim_start_matches('%');
+                                let slot = ensure_slot(
+                                    &builder,
+                                    name,
+                                    ctx.ptr_type(AddressSpace::default()).into(),
+                                    &mut allocas,
+                                )?;
+                                builder.build_store(slot, ptr).map_err(|err| {
+                                    CodegenError::BackendFailure {
+                                        message: format!("failed to store gep result: {:?}", err),
+                                    }
+                                })?;
+                            }
+                            IRInstructionKind::Store { address, value } => {
+                                let addr_val = lower_operand(&ctx, &builder, &allocas, address)?;
+                                let val = lower_operand(&ctx, &builder, &allocas, value)?;
+                                let ptr = addr_val.into_pointer_value();
+                                builder.build_store(ptr, val).map_err(|err| {
+                                    CodegenError::BackendFailure {
+                                        message: format!("failed to emit store: {:?}", err),
+                                    }
+                                })?;
+                            }
+                            IRInstructionKind::Load {
+                                target,
+                                address,
+                                ty,
+                            } => {
+                                let addr_val = lower_operand(&ctx, &builder, &allocas, address)?;
+                                let ptr = addr_val.into_pointer_value();
+                                let load_ty = map_type(&ctx, Some(ty))
+                                    .unwrap_or_else(|| ctx.f64_type().into());
+                                let val = builder
+                                    .build_load(load_ty, ptr, target.0.trim_start_matches('%'))
+                                    .map_err(|err| CodegenError::BackendFailure {
+                                        message: format!("failed to emit load: {:?}", err),
+                                    })?;
+                                let name = target.0.trim_start_matches('%');
+                                let slot =
+                                    ensure_slot(&builder, name, val.get_type(), &mut allocas)?;
+                                builder.build_store(slot, val).map_err(|err| {
+                                    CodegenError::BackendFailure {
+                                        message: format!("failed to store load result: {:?}", err),
                                     }
                                 })?;
                             }

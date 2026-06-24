@@ -976,6 +976,48 @@ impl Parser {
         ))
     }
 
+    /// Parsea un método dentro de un tipo (sin la palabra clave 'function').
+    fn parse_method_declaration(&mut self) -> Option<FunctionDeclaration> {
+        let name_token = self.cursor.peek().clone();
+        let name = match &name_token.token_type {
+            TokenType::Identifier(name) => {
+                self.cursor.advance();
+                name.clone()
+            }
+            _ => return None,
+        };
+
+        if self.expect(TokenType::LeftParen).is_err() {
+            self.synchronize();
+            return None;
+        }
+
+        let parameters = self.parse_parameter_list();
+
+        let return_type = if self.cursor.match_token(&TokenType::Colon) {
+            Some(self.parse_type_reference())
+        } else {
+            None
+        };
+
+        let body = if self.cursor.match_token(&TokenType::Arrow) {
+            self.parse_expression()
+        } else if self.cursor.check(&TokenType::LeftBrace) {
+            self.parse_block()
+        } else {
+            self.error(ParserError::ExpectedFunctionBody);
+            self.synchronize();
+            return None;
+        };
+
+        Some(FunctionDeclaration {
+            name,
+            parameters,
+            return_type,
+            body,
+        })
+    }
+
     /// Parse una declaración de tipo top-level.
     ///
     /// Gramática (MVP):
@@ -1066,13 +1108,24 @@ impl Parser {
             }
 
             if self.cursor.check(&TokenType::Function) {
+                // Explicit 'function' keyword (still supported)
                 if let Some(declaration) = self.parse_function_declaration()
                     && let DeclarationKind::Function(function) = declaration.kind
                 {
                     members.push(TypeMember::Method(function));
                 }
             } else if matches!(self.cursor.peek().token_type, TokenType::Identifier(_)) {
-                if let Some(attribute) = self.parse_type_attribute() {
+                // Lookahead: method has '(' after name, attribute has ':' or '='
+                let saved_pos = self.cursor.current_position();
+                self.cursor.advance(); // consume identifier
+                let is_method = self.cursor.check(&TokenType::LeftParen);
+                self.cursor.set_position(saved_pos); // restore
+
+                if is_method {
+                    if let Some(method) = self.parse_method_declaration() {
+                        members.push(TypeMember::Method(method));
+                    }
+                } else if let Some(attribute) = self.parse_type_attribute() {
                     members.push(TypeMember::Attribute(attribute));
                 }
             } else {

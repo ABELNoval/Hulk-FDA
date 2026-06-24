@@ -158,9 +158,16 @@ pub struct Expr {
     pub span: Span,
 }
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+static EXPR_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
+
 impl Expr {
     pub fn new(kind: ExprKind, span: Span) -> Self {
-        Self { kind, span, id: 0 }
+        Self {
+            kind,
+            span,
+            id: EXPR_ID_COUNTER.fetch_add(1, Ordering::SeqCst),
+        }
     }
 
     pub fn literal(literal: Literal, span: Span) -> Self {

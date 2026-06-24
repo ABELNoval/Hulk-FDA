@@ -22,6 +22,7 @@ use crate::semantic::expression_checker::ExpressionChecker;
 use crate::semantic::symbol_table::{SymbolInfo, SymbolTable};
 use crate::semantic::type_system::NormalizedType;
 use crate::semantic::type_system::TypeEnvironment;
+use crate::utils::Span;
 use crate::utils::errors::semantic::SemanticError;
 
 type SemanticResult<T> = Result<T, SemanticError>;
@@ -100,6 +101,10 @@ pub struct SemanticAnalyzer {
     /// Observed call signatures across the whole program (useful to infer
     /// parameter types from top-level calls before analyzing function bodies)
     observed_call_signatures: std::collections::HashMap<String, Vec<Vec<NormalizedType>>>,
+    method_signatures: std::collections::HashMap<String, (Vec<NormalizedType>, NormalizedType)>,
+    type_fields:
+        std::collections::HashMap<String, std::collections::HashMap<String, NormalizedType>>,
+    type_parents: std::collections::HashMap<String, String>,
 }
 
 impl SemanticAnalyzer {
@@ -112,6 +117,9 @@ impl SemanticAnalyzer {
             context,
             current_inferred_signatures: None,
             observed_call_signatures: std::collections::HashMap::new(),
+            method_signatures: std::collections::HashMap::new(),
+            type_fields: std::collections::HashMap::new(),
+            type_parents: std::collections::HashMap::new(),
         }
     }
 
@@ -170,6 +178,14 @@ impl SemanticAnalyzer {
                     let mut methods: Vec<FunctionDeclaration> = Vec::new();
                     let mut properties: Vec<(String, crate::parser::ast::TypeReference)> =
                         Vec::new();
+
+                    // Los parámetros del tipo SON atributos (accesibles via self)
+                    for param in &td.parameters {
+                        if let Some(ann) = &param.annotation {
+                            properties.push((param.name.clone(), ann.clone()));
+                        }
+                    }
+
                     for member in &td.members {
                         match member {
                             TypeMember::Method(f) => methods.push(f.clone()),
@@ -185,23 +201,93 @@ impl SemanticAnalyzer {
                         name: td.name.clone(),
                         parameters: td.parameters.clone(),
                         parent,
-                        methods,
-                        properties,
+                        methods: methods.clone(),
+                        properties: properties.clone(),
                         implemented_protocols: vec![],
                         span: crate::utils::errors::span::Span::default(),
                     };
+
+                    // Registrar relación de herencia
+                    if let Some(ref parent_name) = type_info.parent {
+                        self.type_parents
+                            .insert(type_info.name.clone(), parent_name.clone());
+                    }
+
+                    // Registrar campos para lookup de MemberAccess
+                    let mut fields = std::collections::HashMap::new();
+                    for (name, type_ref) in &properties {
+                        let normalized = self
+                            .context
+                            .types
+                            .validate_type_reference(type_ref)
+                            .unwrap_or(NormalizedType::Unknown);
+                        fields.insert(name.clone(), normalized);
+                    }
+                    self.type_fields.insert(type_info.name.clone(), fields);
+
+                    // Registrar firmas de métodos para lookup de llamadas
+                    for method in &methods {
+                        let param_types: Vec<NormalizedType> = method
+                            .parameters
+                            .iter()
+                            .map(|p| {
+                                p.annotation
+                                    .as_ref()
+                                    .map(|a| {
+                                        self.context
+                                            .types
+                                            .validate_type_reference(a)
+                                            .unwrap_or(NormalizedType::Unknown)
+                                    })
+                                    .unwrap_or(NormalizedType::Unknown)
+                            })
+                            .collect();
+                        let ret_type = method
+                            .return_type
+                            .as_ref()
+                            .map(|r| {
+                                self.context
+                                    .types
+                                    .validate_type_reference(r)
+                                    .unwrap_or(NormalizedType::Unknown)
+                            })
+                            .unwrap_or(NormalizedType::Unknown);
+                        let key = format!("{}_{}", type_info.name, method.name);
+                        self.method_signatures.insert(key, (param_types, ret_type));
+                    }
 
                     if let Err(e) = self.context.types.register_type(type_info) {
                         self.report_error(e);
                     }
 
                     // declare type in symbol table
-                    let sym = crate::semantic::symbol_table::SymbolInfo::Type {
+                    let sym = SymbolInfo::Type {
                         name: td.name.clone(),
                         span: crate::utils::errors::span::Span::default(),
                     };
                     if let Err(e) = self.context.symbols.declare(sym) {
                         self.report_error(e);
+                    }
+
+                    // Pre-declarar métodos en la tabla de símbolos para que el cuerpo pueda referenciarlos
+                    for member in &td.members {
+                        if let TypeMember::Method(method) = member {
+                            let normalized_return = match &method.return_type {
+                                Some(type_ref) => self
+                                    .context
+                                    .types
+                                    .validate_type_reference(type_ref)
+                                    .unwrap_or(NormalizedType::Unknown),
+                                None => NormalizedType::Unknown,
+                            };
+                            let sym = SymbolInfo::Function {
+                                name: format!("{}_{}", td.name, method.name),
+                                parameters: method.parameters.clone(),
+                                return_type: normalized_return,
+                                span: crate::utils::errors::span::Span::default(),
+                            };
+                            let _ = self.context.symbols.declare(sym);
+                        }
                     }
                 }
                 DeclarationKind::Protocol(pd) => {
@@ -353,19 +439,78 @@ impl SemanticAnalyzer {
             }
         }
 
+        // Fourth pass: analyze type method bodies
+        for decl in &_program.declarations {
+            if let DeclarationKind::Type(td) = &decl.kind {
+                for member in &td.members {
+                    if let TypeMember::Method(method) = member {
+                        self.context.symbols.enter_scope();
+
+                        // Declare self
+                        let self_sym = SymbolInfo::Parameter {
+                            name: "self".to_string(),
+                            type_ref: NormalizedType::Named(td.name.clone()),
+                            span: crate::utils::errors::span::Span::default(),
+                        };
+                        if let Err(e) = self.context.symbols.declare(self_sym) {
+                            self.report_error(e);
+                        }
+
+                        // Declare method parameters
+                        for p in method.parameters.iter() {
+                            let normalized_type = match &p.annotation {
+                                Some(annotation) => self
+                                    .context
+                                    .types
+                                    .validate_type_reference(annotation)
+                                    .unwrap_or(NormalizedType::Unknown),
+                                None => NormalizedType::Unknown,
+                            };
+                            let param_sym = SymbolInfo::Parameter {
+                                name: p.name.clone(),
+                                type_ref: normalized_type,
+                                span: p.span.clone(),
+                            };
+                            if let Err(e) = self.context.symbols.declare(param_sym) {
+                                self.report_error(e);
+                            }
+                        }
+
+                        // Analyze body
+                        let body_t = match self.analyze_expr(&method.body) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                self.report_error(e);
+                                NormalizedType::Unknown
+                            }
+                        };
+
+                        // Inferir tipo de retorno si no está anotado
+                        if method.return_type.is_none() {
+                            let key = format!("{}_{}", td.name, method.name);
+                            if let Some((_, ret)) = self.method_signatures.get_mut(&key) {
+                                *ret = body_t;
+                            }
+                        }
+
+                        self.context.symbols.exit_scope();
+                    }
+                }
+            }
+        }
+
         // Analyze entry expression after function body inference so inferred
         // return types are available for top-level calls.
         self.check_entry_expression(_program)?;
 
         Ok(())
     }
-
     /// Verifica la expresión de entrada del programa
     fn check_entry_expression(&mut self, program: &Program) -> SemanticResult<()> {
-        if let Some(expr) = &program.entry_expression {
-            if let Err(e) = self.analyze_expr(expr) {
-                self.report_error(e);
-            }
+        if let Some(expr) = &program.entry_expression
+            && let Err(e) = self.analyze_expr(expr)
+        {
+            self.report_error(e);
         }
 
         Ok(())
@@ -417,21 +562,74 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::Call { callee, arguments } => {
-                if let ExprKind::Identifier(name) = &callee.kind {
-                    // 1. Obtener tipos de los argumentos
+                // Caso 1: Llamada a método (obj.method(args))
+                if let ExprKind::MemberAccess { object, member } = &callee.kind {
+                    let obj_type = self.analyze_expr(object)?;
                     let mut arg_types = Vec::new();
-
                     for arg in arguments {
                         arg_types.push(self.analyze_expr(arg)?);
                     }
 
-                    // record observed call signature for potential inference
+                    let type_name = match &obj_type {
+                        NormalizedType::Named(name) => name.clone(),
+                        _ => {
+                            self.report_error(SemanticError::UnsupportedFeature {
+                                feature: "method call on non-object".to_string(),
+                            });
+                            return Ok(NormalizedType::Unknown);
+                        }
+                    };
+
+                    let mangled_name = format!("{}_{}", type_name, member);
+
+                    let method_sig = self.find_method_signature(&type_name, member);
+                    if let Some((expected_params, expected_return)) = method_sig {
+                        if arguments.len() != expected_params.len() {
+                            self.report_error(SemanticError::WrongArgumentCount {
+                                function: mangled_name.clone(),
+                                expected: expected_params.len(),
+                                found: arguments.len(),
+                            });
+                        } else {
+                            for (i, (arg_type, param_type)) in
+                                arg_types.iter().zip(expected_params.iter()).enumerate()
+                            {
+                                if !self.context.types.is_compatible(arg_type, param_type)
+                                    && !arg_type.is_unknown()
+                                    && !param_type.is_unknown()
+                                {
+                                    self.report_error(SemanticError::ArgumentTypeMismatch {
+                                        function: mangled_name.clone(),
+                                        parameter_name: format!("arg{}", i),
+                                        parameter_position: i,
+                                        expected: param_type.to_string(),
+                                        found: arg_type.to_string(),
+                                    });
+                                }
+                            }
+                        }
+                        Ok(expected_return.clone())
+                    } else {
+                        self.report_error(SemanticError::MemberNotFound {
+                            type_name: type_name.clone(),
+                            member_name: member.clone(),
+                        });
+                        Ok(NormalizedType::Unknown)
+                    }
+                }
+                // Caso 2: Llamada a función global (print, sqrt, etc.)
+                else if let ExprKind::Identifier(name) = &callee.kind {
+                    let mut arg_types = Vec::new();
+                    for arg in arguments {
+                        arg_types.push(self.analyze_expr(arg)?);
+                    }
+
+                    // record observed call signature
                     self.observed_call_signatures
                         .entry(name.clone())
                         .or_insert_with(Vec::new)
                         .push(arg_types.clone());
 
-                    // 2. Construir la firma esperada
                     let mut expected_params: Option<Vec<(String, NormalizedType)>> = None;
                     let mut expected_return: Option<NormalizedType> = None;
 
@@ -454,19 +652,15 @@ impl SemanticAnalyzer {
                                             .unwrap_or(NormalizedType::Unknown)
                                     })
                                     .unwrap_or(NormalizedType::Unknown);
-
                                 (p.name.clone(), ty)
                             })
                             .collect();
-
                         expected_params = Some(params);
-
                         expected_return = Some(return_type.clone());
                     } else {
                         self.report_error(SemanticError::UndefinedFunction { name: name.clone() });
                     }
 
-                    // 3. Delegar la validación al checker
                     match self.context.expression_checker.check_function_call(
                         name,
                         &arg_types,
@@ -475,18 +669,17 @@ impl SemanticAnalyzer {
                         &self.context.types,
                     ) {
                         Ok(res) => Ok(res.type_),
-
                         Err(e) => {
                             self.report_error(e.clone());
-
                             Ok(NormalizedType::Unknown)
                         }
                     }
-                } else {
+                }
+                // Caso 3: Otro (no soportado)
+                else {
                     self.report_error(SemanticError::UnsupportedFeature {
                         feature: "complex function calls".to_string(),
                     });
-
                     Ok(NormalizedType::Unknown)
                 }
             }
@@ -702,9 +895,21 @@ impl SemanticAnalyzer {
                     }
                 }
             }
-            ExprKind::MemberAccess { object, member: _ } => {
-                self.analyze_expr(object)?;
-                Ok(NormalizedType::Unknown)
+            ExprKind::MemberAccess { object, member } => {
+                let obj_type = self.analyze_expr(object)?;
+                if let NormalizedType::Named(type_name) = &obj_type {
+                    if let Some(field_type) = self.find_field_type(type_name, member) {
+                        Ok(field_type)
+                    } else {
+                        self.report_error(SemanticError::MemberNotFound {
+                            type_name: type_name.clone(),
+                            member_name: member.clone(),
+                        });
+                        Ok(NormalizedType::Unknown)
+                    }
+                } else {
+                    Ok(NormalizedType::Unknown)
+                }
             }
             ExprKind::IndexAccess { object, index } => {
                 self.analyze_expr(object)?;
@@ -712,6 +917,8 @@ impl SemanticAnalyzer {
                 Ok(NormalizedType::Unknown)
             }
             ExprKind::Self_ => match self.context.symbols.lookup("self") {
+                Some(SymbolInfo::Parameter { type_ref, .. }) => Ok(type_ref.clone()),
+                Some(SymbolInfo::Variable { type_ref, .. }) => Ok(type_ref.clone()),
                 Some(_) => Ok(NormalizedType::Unknown),
                 None => {
                     self.report_error(SemanticError::UndeclaredVariable {
@@ -731,6 +938,15 @@ impl SemanticAnalyzer {
                     Ok(NormalizedType::Unknown)
                 }
             },
+            ExprKind::New { type_ref, .. } => {
+                let type_name = type_ref.display_name();
+                if !self.context.types.has_type(&type_name) {
+                    self.report_error(SemanticError::UndeclaredType {
+                        name: type_name.clone(),
+                    });
+                }
+                Ok(NormalizedType::Named(type_name))
+            }
             _ => Ok(NormalizedType::Unknown),
         };
         if let Ok(ref resolved_type) = ty {
@@ -739,6 +955,35 @@ impl SemanticAnalyzer {
                 .insert(expr.id, resolved_type.clone());
         }
         ty
+    }
+
+    fn find_method_signature(
+        &self,
+        type_name: &str,
+        method_name: &str,
+    ) -> Option<(Vec<NormalizedType>, NormalizedType)> {
+        let key = format!("{}_{}", type_name, method_name);
+        if let Some(sig) = self.method_signatures.get(&key) {
+            return Some(sig.clone());
+        }
+        // Buscar recursivamente en el padre
+        if let Some(parent) = self.type_parents.get(type_name) {
+            return self.find_method_signature(parent, method_name);
+        }
+        None
+    }
+
+    fn find_field_type(&self, type_name: &str, field_name: &str) -> Option<NormalizedType> {
+        if let Some(fields) = self.type_fields.get(type_name) {
+            if let Some(ty) = fields.get(field_name) {
+                return Some(ty.clone());
+            }
+        }
+        // Buscar recursivamente en el padre
+        if let Some(parent) = self.type_parents.get(type_name) {
+            return self.find_field_type(parent, field_name);
+        }
+        None
     }
 
     /// Retorna todos los errores encontrados

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::parser::ast::{
     BinaryOperator, DeclarationKind, Expr, ExprKind, FunctionDeclaration, Literal, Parameter,
-    Program, TypeReference, UnaryOperator,
+    Program, TypeDeclaration, TypeMember, TypeReference, UnaryOperator,
 };
 use crate::semantic::type_system::NormalizedType;
 use crate::utils::errors::span::Span;
@@ -92,6 +92,8 @@ pub struct IRBuilder {
     scopes: Vec<HashMap<String, IRValueId>>,
     loop_stack: Vec<LoopContext>,
     expr_types: HashMap<usize, NormalizedType>,
+    type_layouts: HashMap<String, Vec<(String, String)>>, // type_name -> [(field_name, field_type)]
+    type_parents: HashMap<String, String>,
 }
 
 impl IRBuilder {
@@ -105,6 +107,8 @@ impl IRBuilder {
             scopes: Vec::new(),
             loop_stack: Vec::new(),
             expr_types: HashMap::new(),
+            type_layouts: HashMap::new(),
+            type_parents: HashMap::new(),
         }
     }
 
@@ -231,6 +235,8 @@ impl IRBuilder {
         for declaration in &program.declarations {
             if let DeclarationKind::Function(function) = &declaration.kind {
                 self.lower_function_declaration(function)?;
+            } else if let DeclarationKind::Type(type_decl) = &declaration.kind {
+                self.lower_type_declaration(type_decl)?;
             }
         }
 
@@ -293,21 +299,31 @@ impl IRBuilder {
             .map(|(index, parameter)| self.lower_parameter(parameter, index))
             .collect::<Result<Vec<_>, _>>()?;
 
-        self.create_function(
-            function.name.clone(),
-            parameters.clone(),
-            function
-                .return_type
-                .as_ref()
-                .map(|type_ref| type_ref.display_name()),
-        )?;
+        // EXTRAER ANTES de mover parameters a create_function
+        let param_bindings: Vec<(String, IRValueId)> = parameters
+            .iter()
+            .map(|p| (p.id.0.clone(), p.id.clone()))
+            .collect();
+
+        let return_type = function
+            .return_type
+            .as_ref()
+            .map(|t| t.display_name())
+            .or_else(|| {
+                self.expr_types
+                    .get(&function.body.id)
+                    .map(|t| t.to_string())
+            });
+
+        self.create_function(function.name.clone(), parameters, return_type)?;
 
         self.create_block_in_function(&function.name, "entry")?;
         self.set_current_block(function.name.clone(), "entry")?;
         self.push_scope();
 
-        for (ast_param, ir_param) in function.parameters.iter().zip(parameters.iter()) {
-            self.define_variable(&ast_param.name, ir_param.id.clone());
+        // Usar param_bindings (valores propios, no borrow de parameters)
+        for (ast_param, (_, ir_param_id)) in function.parameters.iter().zip(param_bindings.iter()) {
+            self.define_variable(&ast_param.name, ir_param_id.clone());
         }
 
         let body_value = self.lower_expr(&function.body)?;
@@ -338,6 +354,281 @@ impl IRBuilder {
             .as_ref()
             .map(|type_ref| type_ref.display_name());
         Ok(value)
+    }
+
+    fn lower_type_declaration(
+        &mut self,
+        type_decl: &TypeDeclaration,
+    ) -> Result<(), IRLoweringError> {
+        let mut fields = Vec::new();
+
+        // Heredar campos del padre
+        if let Some(parent_ref) = &type_decl.inherits {
+            let parent_name = parent_ref.display_name();
+            if let Some(parent_fields) = self.type_layouts.get(&parent_name).cloned() {
+                for (name, ty) in parent_fields {
+                    fields.push((name, ty));
+                }
+            }
+            self.type_parents
+                .insert(type_decl.name.clone(), parent_name);
+        }
+
+        // Conjunto de nombres de atributos explícitos
+        let explicit_attrs: std::collections::HashSet<String> = type_decl
+            .members
+            .iter()
+            .filter_map(|m| {
+                if let TypeMember::Attribute(a) = m {
+                    Some(a.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Parámetros del tipo que NO son sobrescritos por atributos
+        for param in &type_decl.parameters {
+            if let Some(ann) = &param.annotation
+                && !explicit_attrs.contains(&param.name)
+            {
+                fields.push((param.name.clone(), ann.display_name()));
+            }
+        }
+
+        // Atributos explícitos
+        for member in &type_decl.members {
+            if let TypeMember::Attribute(a) = member
+                && let Some(ann) = &a.annotation
+            {
+                fields.push((a.name.clone(), ann.display_name()));
+            }
+        }
+
+        self.type_layouts.insert(type_decl.name.clone(), fields);
+
+        // Bajar métodos y constructor
+        for member in &type_decl.members {
+            if let TypeMember::Method(method) = member {
+                self.lower_method_declaration(&type_decl.name, method)?;
+            }
+        }
+        self.lower_constructor(type_decl)?;
+
+        Ok(())
+    }
+
+    fn find_method_owner(&self, type_name: &str, method_name: &str) -> Option<String> {
+        let key = format!("{}_{}", type_name, method_name);
+        if self.module.function(&key).is_some() {
+            return Some(type_name.to_string());
+        }
+        if let Some(parent) = self.type_parents.get(type_name) {
+            return self.find_method_owner(parent, method_name);
+        }
+        None
+    }
+
+    fn lower_method_declaration(
+        &mut self,
+        type_name: &str,
+        method: &FunctionDeclaration,
+    ) -> Result<(), IRLoweringError> {
+        let mangled_name = format!("{}_{}", type_name, method.name);
+
+        // Construir parámetros IR: self primero, luego los del AST
+        let mut parameters = vec![IRValue::parameter("self").with_type("ptr")];
+        for (idx, param) in method.parameters.iter().enumerate() {
+            parameters.push(self.lower_parameter(param, idx + 1)?);
+        }
+
+        // Extraer (nombre, id) ANTES de mover parameters a create_function
+        let scope_bindings: Vec<(String, IRValueId)> = parameters
+            .iter()
+            .map(|p| (p.id.0.clone(), p.id.clone()))
+            .collect();
+
+        let return_type = method
+            .return_type
+            .as_ref()
+            .map(|t| t.display_name())
+            .or_else(|| self.expr_types.get(&method.body.id).map(|t| t.to_string()));
+        self.create_function(mangled_name.clone(), parameters, return_type)?;
+        self.create_block_in_function(&mangled_name, "entry")?;
+        self.set_current_block(mangled_name.clone(), "entry")?;
+        self.push_scope();
+
+        // Definir self y parámetros en el scope
+        for (name, id) in scope_bindings {
+            self.define_variable(&name, id);
+        }
+
+        let body_value = self.lower_expr(&method.body)?;
+        if !self.current_block_terminated()? {
+            self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
+                IROperand::Value(body_value),
+            ))))?;
+        }
+
+        self.pop_scope();
+        Ok(())
+    }
+
+    fn lower_constructor(&mut self, type_decl: &TypeDeclaration) -> Result<(), IRLoweringError> {
+        let ctor_name = format!("new_{}", type_decl.name);
+
+        let parameters: Vec<IRValue> = type_decl
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(i, p)| self.lower_parameter(p, i))
+            .collect::<Result<_, _>>()?;
+
+        let param_bindings: Vec<(String, IRValueId)> = parameters
+            .iter()
+            .map(|p| (p.id.0.clone(), p.id.clone()))
+            .collect();
+
+        self.create_function(&ctor_name, parameters, Some("ptr".to_string()))?;
+        self.create_block_in_function(&ctor_name, "entry")?;
+        self.set_current_block(ctor_name.clone(), "entry")?;
+        self.push_scope();
+
+        for (name, id) in param_bindings {
+            self.define_variable(&name, id);
+        }
+
+        // Conjunto de nombres de atributos explícitos
+        let explicit_attrs: std::collections::HashSet<String> = type_decl
+            .members
+            .iter()
+            .filter_map(|m| {
+                if let TypeMember::Attribute(a) = m {
+                    Some(a.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let parent_fields = if let Some(parent_ref) = &type_decl.inherits {
+            let parent_name = parent_ref.display_name();
+            self.type_layouts
+                .get(&parent_name)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let parent_field_count = parent_fields.len();
+        let own_param_count = type_decl
+            .parameters
+            .iter()
+            .filter(|p| p.annotation.is_some() && !explicit_attrs.contains(&p.name))
+            .count();
+        let attr_count = type_decl
+            .members
+            .iter()
+            .filter(|m| matches!(m, TypeMember::Attribute(_)))
+            .count();
+
+        let total_size = std::cmp::max(
+            8,
+            ((parent_field_count + own_param_count + attr_count) as i64 + 1) * 8,
+        );
+
+        // Allocar
+        let obj_ptr = self.fresh_value();
+        self.emit(IRInstruction::new(IRInstructionKind::Call {
+            target: obj_ptr.clone(),
+            callee: "hulk_alloc".to_string(),
+            arguments: vec![IROperand::Integer(total_size)],
+            original: None,
+        }))?;
+
+        // Evaluar parent_arguments
+        let parent_arg_values: Vec<IRValueId> = type_decl
+            .parent_arguments
+            .iter()
+            .map(|arg| self.lower_expr(arg))
+            .collect::<Result<_, _>>()?;
+
+        let mut field_idx = 0;
+
+        // 1. Campos heredados
+        for (_, field_type) in &parent_fields {
+            let offset = (field_idx + 1) as i64;
+            let gep_target = self.fresh_value();
+            self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                target: gep_target.clone(),
+                base: IROperand::Value(obj_ptr.clone()),
+                indices: vec![IROperand::Integer(offset)],
+                element_type: field_type.clone(),
+            }))?;
+            let arg_value = parent_arg_values
+                .get(field_idx)
+                .cloned()
+                .unwrap_or_else(|| self.fresh_value());
+            self.emit(IRInstruction::new(IRInstructionKind::Store {
+                address: IROperand::Value(gep_target),
+                value: IROperand::Value(arg_value),
+            }))?;
+            field_idx += 1;
+        }
+
+        // 2. Parámetros del tipo (que no son sobrescritos)
+        for param in &type_decl.parameters {
+            if let Some(ann) = &param.annotation
+                && !explicit_attrs.contains(&param.name)
+            {
+                let offset = (field_idx + 1) as i64;
+                let gep_target = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                    target: gep_target.clone(),
+                    base: IROperand::Value(obj_ptr.clone()),
+                    indices: vec![IROperand::Integer(offset)],
+                    element_type: ann.display_name(),
+                }))?;
+                let param_value = self
+                    .lookup_variable(&param.name)
+                    .unwrap_or_else(|| self.fresh_value());
+                self.emit(IRInstruction::new(IRInstructionKind::Store {
+                    address: IROperand::Value(gep_target),
+                    value: IROperand::Value(param_value),
+                }))?;
+                field_idx += 1;
+            }
+        }
+
+        // 3. Atributos explícitos
+        for member in &type_decl.members {
+            if let TypeMember::Attribute(attr) = member
+                && let Some(ann) = &attr.annotation
+            {
+                let offset = (field_idx + 1) as i64;
+                let gep_target = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                    target: gep_target.clone(),
+                    base: IROperand::Value(obj_ptr.clone()),
+                    indices: vec![IROperand::Integer(offset)],
+                    element_type: ann.display_name(),
+                }))?;
+                let init_value = self.lower_expr(&attr.initializer)?;
+                self.emit(IRInstruction::new(IRInstructionKind::Store {
+                    address: IROperand::Value(gep_target),
+                    value: IROperand::Value(init_value),
+                }))?;
+                field_idx += 1;
+            }
+        }
+
+        self.emit(IRInstruction::new(IRInstructionKind::Return(Some(
+            IROperand::Value(obj_ptr),
+        ))))?;
+
+        self.pop_scope();
+        Ok(())
     }
 
     fn lower_expr(&mut self, expr: &Expr) -> Result<IRValueId, IRLoweringError> {
@@ -578,6 +869,32 @@ impl IRBuilder {
     }
 
     fn lower_call(&mut self, callee: &Expr, args: &[Expr]) -> Result<IRValueId, IRLoweringError> {
+        // Caso especial: callee es MemberAccess → llamada a método
+        if let ExprKind::MemberAccess { object, member } = &callee.kind {
+            let obj_val = self.lower_expr(object)?;
+
+            // Obtener tipo del objeto
+            let obj_type = self.expr_types.get(&object.id).cloned();
+            if let Some(NormalizedType::Named(type_name)) = obj_type {
+                let owner = self
+                    .find_method_owner(&type_name, member)
+                    .unwrap_or_else(|| type_name.clone());
+                let mangled_name = format!("{}_{}", owner, member);
+                let mut arg_values = vec![obj_val];
+                for arg in args {
+                    arg_values.push(self.lower_expr(arg)?);
+                }
+                return self.emit_call_with_values(&mangled_name, arg_values);
+            }
+
+            // Fallback
+            let mut arg_values = vec![obj_val];
+            for arg in args {
+                arg_values.push(self.lower_expr(arg)?);
+            }
+            return self.emit_call_with_values(&format!("member.{}", member), arg_values);
+        }
+
         let callee_name = self.resolve_callee(callee)?;
         let arg_values = args
             .iter()
@@ -916,9 +1233,46 @@ impl IRBuilder {
         _expr: &Expr,
     ) -> Result<IRValueId, IRLoweringError> {
         let object_value = self.lower_expr(object)?;
+
+        // Clonar los datos del layout ANTES de cualquier mutación de self
+        let field_info: Option<(i64, String)> = if let Some(NormalizedType::Named(type_name)) =
+            self.expr_types.get(&object.id).cloned()
+        {
+            self.type_layouts.get(&type_name).and_then(|fields| {
+                fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (name, _))| name == member)
+                    .map(|(idx, (_, field_type))| ((idx + 1) as i64, field_type.clone()))
+            })
+        } else {
+            None
+        };
+
+        if let Some((offset, field_type)) = field_info {
+            // GEP al campo
+            let gep_target = self.fresh_value();
+            self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                target: gep_target.clone(),
+                base: IROperand::Value(object_value),
+                indices: vec![IROperand::Integer(offset)],
+                element_type: field_type.clone(),
+            }))?;
+
+            // Load del valor
+            let load_target = self.fresh_value();
+            self.emit(IRInstruction::new(IRInstructionKind::Load {
+                target: load_target.clone(),
+                address: IROperand::Value(gep_target),
+                ty: field_type,
+            }))?;
+
+            return Ok(load_target);
+        }
+
+        // Fallback: llamada mágica
         self.emit_call_with_values(&format!("member.{}", member), vec![object_value])
     }
-
     fn lower_index_access(
         &mut self,
         object: &Expr,
@@ -960,7 +1314,7 @@ impl IRBuilder {
             .iter()
             .map(|argument| self.lower_expr(argument))
             .collect::<Result<Vec<_>, _>>()?;
-        self.emit_call_with_values(&format!("new {}", type_ref.display_name()), argument_values)
+        self.emit_call_with_values(&format!("new_{}", type_ref.display_name()), argument_values)
     }
 
     fn lower_self(&mut self, expr: &Expr) -> Result<IRValueId, IRLoweringError> {
@@ -1005,10 +1359,6 @@ impl IRBuilder {
     fn resolve_callee(&mut self, callee: &Expr) -> Result<String, IRLoweringError> {
         match &callee.kind {
             ExprKind::Identifier(name) => Ok(name.clone()),
-            ExprKind::MemberAccess { object, member } => {
-                let object_value = self.lower_expr(object)?;
-                Ok(format!("{}.{}", object_value.0, member))
-            }
             _ => Err(IRLoweringError::new(
                 "Only identifier and member-access callees are supported",
             )),

@@ -92,6 +92,21 @@ pub enum IRInstructionKind {
         original: Option<String>,
     },
     Nop,
+    GetElementPtr {
+        target: IRValueId,
+        base: IROperand,
+        indices: Vec<IROperand>,
+        element_type: String,
+    },
+    Store {
+        address: IROperand, // dónde guardar
+        value: IROperand,   // qué guardar
+    },
+    Load {
+        target: IRValueId,
+        address: IROperand,
+        ty: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -394,6 +409,32 @@ impl IRInstruction {
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{} = call {}({})", target.0, callee, args)
+            }
+            IRInstructionKind::GetElementPtr {
+                target,
+                base,
+                indices,
+                ..
+            } => {
+                let idxs = indices
+                    .iter()
+                    .map(|i| i.fmt_display())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "{} = getelementptr {}, {}",
+                    target.0,
+                    base.fmt_display(),
+                    idxs
+                )
+            }
+            IRInstructionKind::Store { address, value } => {
+                format!("store {} -> {}", value.fmt_display(), address.fmt_display())
+            }
+            IRInstructionKind::Load {
+                target, address, ..
+            } => {
+                format!("{} = load {}", target.0, address.fmt_display())
             }
             IRInstructionKind::Nop => "nop".to_string(),
         }

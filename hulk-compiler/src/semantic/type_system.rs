@@ -59,6 +59,7 @@ pub enum NormalizedType {
     Iterable(Box<NormalizedType>),
     /// Tipo vector (por ejemplo, Number[])
     Vector(Box<NormalizedType>),
+    Protocol(String),
     /// Tipo desconocido (útil para error recovery)
     Unknown,
 }
@@ -108,6 +109,7 @@ impl std::fmt::Display for NormalizedType {
             NormalizedType::Iterable(inner) => write!(f, "{}*", inner),
             NormalizedType::Vector(inner) => write!(f, "{}[]", inner),
             NormalizedType::Unknown => write!(f, "?"),
+            NormalizedType::Protocol(n) => write!(f, "{}", n),
         }
     }
 }
@@ -118,6 +120,7 @@ pub struct TypeEnvironment {
     user_types: HashMap<String, TypeInfo>,
     /// Protocolos definidos
     protocols: HashMap<String, ProtocolInfo>,
+    type_implements: HashMap<String, Vec<String>>,
 }
 
 impl TypeEnvironment {
@@ -126,6 +129,7 @@ impl TypeEnvironment {
         Self {
             user_types: HashMap::new(),
             protocols: HashMap::new(),
+            type_implements: HashMap::new(),
         }
     }
 
@@ -194,6 +198,23 @@ impl TypeEnvironment {
         )
     }
 
+    pub fn type_implements(&self, type_name: &str, proto_name: &str) -> bool {
+        self.type_implements
+            .get(type_name)
+            .map(|v| v.contains(&proto_name.to_string()))
+            .unwrap_or(false)
+    }
+
+    pub fn add_type_implements(&mut self, type_name: String, proto_name: String) {
+        self.type_implements
+            .entry(type_name)
+            .or_default()
+            .push(proto_name);
+    }
+
+    pub fn get_type_mut(&mut self, name: &str) -> Option<&mut TypeInfo> {
+        self.user_types.get_mut(name)
+    }
     /// Registra un nuevo tipo en el entorno
     ///
     /// Retorna error si el tipo ya existe o si sus padres no existen.
@@ -331,6 +352,10 @@ impl TypeEnvironment {
         self.protocols.contains_key(name)
     }
 
+    pub fn protocols(&self) -> &std::collections::HashMap<String, ProtocolInfo> {
+        &self.protocols
+    }
+
     /// Busca un protocolo en el entorno
     pub fn get_protocol(&self, name: &str) -> Option<&ProtocolInfo> {
         self.protocols.get(name)
@@ -366,20 +391,27 @@ impl TypeEnvironment {
     /// - Son iguales
     /// - type_a hereda de type_b
     /// - type_a conforma a protocolo type_b
-    pub fn is_compatible(&self, type_a: &NormalizedType, type_b: &NormalizedType) -> bool {
-        // Igualdad directa y compatibilidad recursiva para contenedores
-        if self.types_equal(type_a, type_b) {
+    pub fn is_compatible(&self, from: &NormalizedType, to: &NormalizedType) -> bool {
+        if from == to {
             return true;
         }
-
-        match (type_a, type_b) {
-            // Vectores: T[] con U[] si T compatible con U
-            (NormalizedType::Vector(a), NormalizedType::Vector(b)) => self.is_compatible(a, b),
-            // Iterables: T* con U* si T compatible con U
-            (NormalizedType::Iterable(a), NormalizedType::Iterable(b)) => self.is_compatible(a, b),
-            // Named -> Named: check nominal subtyping
-            (NormalizedType::Named(a), NormalizedType::Named(b)) => {
-                self.is_subtype(a, b) || self.type_conforms_to_protocol(a, b)
+        match (from, to) {
+            (NormalizedType::Named(from_name), NormalizedType::Named(to_name)) => {
+                // Herencia: un hijo es compatible con su padre
+                self.is_subtype(from_name, to_name)
+            }
+            (NormalizedType::Named(type_name), NormalizedType::Protocol(proto_name)) => {
+                self.type_implements(type_name, proto_name)
+            }
+            (NormalizedType::Protocol(a), NormalizedType::Protocol(b)) => {
+                if a == b {
+                    return true;
+                }
+                if let Some(proto) = self.protocols.get(a) {
+                    proto.extends.iter().any(|ext| ext == b)
+                } else {
+                    false
+                }
             }
             _ => false,
         }
@@ -557,16 +589,16 @@ impl TypeEnvironment {
     ) -> Result<NormalizedType, SemanticError> {
         match &tr.kind {
             TypeReferenceKind::Named(name) => {
-                if !(self.has_type(name) || self.has_protocol(name)) {
-                    return Err(SemanticError::UndeclaredType { name: name.clone() });
-                }
-
-                // Map builtin names to their NormalizedType variant
-                match name.as_str() {
-                    "Number" => Ok(NormalizedType::Number),
-                    "String" => Ok(NormalizedType::String),
-                    "Boolean" => Ok(NormalizedType::Boolean),
-                    _ => Ok(NormalizedType::Named(name.clone())),
+                if Self::is_builtin_name(name) {
+                    Ok(NormalizedType::from_kind(&TypeReferenceKind::Named(
+                        name.clone(),
+                    )))
+                } else if self.user_types.contains_key(name) {
+                    Ok(NormalizedType::Named(name.clone()))
+                } else if self.protocols.contains_key(name) {
+                    Ok(NormalizedType::Protocol(name.clone()))
+                } else {
+                    Err(SemanticError::UnknownType { name: name.clone() })
                 }
             }
             TypeReferenceKind::Iterable(inner) => {

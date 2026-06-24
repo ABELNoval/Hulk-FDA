@@ -361,6 +361,7 @@ mod real {
                 ("print_number", ("double", vec!["double"])),
                 ("print_string", ("ptr", vec!["ptr"])),
                 ("print_bool", ("i1", vec!["i1"])),
+                ("print_object", ("ptr", vec!["ptr"])),
                 ("hulk_num_to_str", ("ptr", vec!["double"])),
                 ("hulk_concat", ("ptr", vec!["ptr", "ptr"])),
                 ("hulk_concat_space", ("ptr", vec!["ptr", "ptr"])),

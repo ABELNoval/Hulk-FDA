@@ -67,6 +67,14 @@ pub extern "C" fn print_bool(value: bool) -> bool {
 }
 
 #[no_mangle]
+pub extern "C" fn print_object(value: *const c_char) -> *const c_char {
+    unsafe {
+        libc::printf(b"%s\n\0".as_ptr() as *const c_char, value);
+    }
+    value
+}
+
+#[no_mangle]
 pub extern "C" fn main() -> c_int {
     unsafe { __entry() as c_int }
 }

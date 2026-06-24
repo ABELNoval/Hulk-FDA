@@ -99,6 +99,8 @@ pub struct IRBuilder {
     type_methods: HashMap<String, Vec<String>>, // type -> [method names]
     type_vtables: HashMap<String, Vec<(String, String)>>, // type -> [(method, mangled)]
     method_sigs: HashMap<String, (Option<String>, Vec<String>)>, // mangled -> (ret, param_tys)
+    protocol_methods: std::collections::HashMap<String, Vec<String>>,
+    type_protocols: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl IRBuilder {
@@ -118,6 +120,8 @@ impl IRBuilder {
             type_vtables: HashMap::new(),
             method_sigs: HashMap::new(),
             current_method: None,
+            protocol_methods: std::collections::HashMap::new(),
+            type_protocols: std::collections::HashMap::new(),
         }
     }
 
@@ -142,20 +146,50 @@ impl IRBuilder {
 
     fn build_vtable_list(&self, type_name: &str) -> Vec<(String, String)> {
         let mut result = Vec::new();
-        if let Some(parent) = self.type_parents.get(type_name) {
-            result = self.build_vtable_list(parent);
+
+        // 1. Métodos de protocolos implementados (índices fijos)
+        if let Some(protocols) = self.type_protocols.get(type_name) {
+            for proto in protocols {
+                if let Some(methods) = self.protocol_methods.get(proto) {
+                    for method in methods {
+                        let mangled = format!("{}_{}", type_name, method);
+                        result.push((method.clone(), mangled));
+                    }
+                }
+            }
         }
+
+        // 2. Métodos propios del tipo (overridean protocolos y padre)
         if let Some(own) = self.type_methods.get(type_name) {
             for method in own {
                 let mangled = format!("{}_{}", type_name, method);
                 if let Some(pos) = result.iter().position(|(m, _)| m == method) {
-                    result[pos] = (method.clone(), mangled); // override
+                    // Override: reemplazar el slot existente
+                    result[pos] = (method.clone(), mangled);
                 } else {
                     result.push((method.clone(), mangled));
                 }
             }
         }
+
+        // 3. Herencia del padre (solo métodos que aún no están en la vtable)
+        if let Some(parent) = self.type_parents.get(type_name) {
+            let parent_vtable = self.build_vtable_list(parent);
+            for (method, mangled) in parent_vtable {
+                if !result.iter().any(|(m, _)| m == &method) {
+                    result.push((method.clone(), mangled));
+                }
+            }
+        }
+
         result
+    }
+
+    fn get_protocol_method_index(&self, proto_name: &str, method: &str) -> Option<usize> {
+        self.protocol_methods
+            .get(proto_name)?
+            .iter()
+            .position(|m| m == method)
     }
 
     fn emit_vtable_globals(&mut self) {
@@ -308,6 +342,14 @@ impl IRBuilder {
     pub fn lower_program(&mut self, program: &Program) -> Result<IRModule, IRLoweringError> {
         self.reset();
         self.module = IRModule::new(IRNaming::module_name("lowered"));
+
+        // Extraer protocolos primero
+        for decl in &program.declarations {
+            if let DeclarationKind::Protocol(pd) = &decl.kind {
+                let methods: Vec<String> = pd.members.iter().map(|m| m.name.clone()).collect();
+                self.protocol_methods.insert(pd.name.clone(), methods);
+            }
+        }
 
         // 1. Registrar layouts y firmas (sin todavía emitir constructores/métodos)
         for decl in &program.declarations {
@@ -530,6 +572,29 @@ impl IRBuilder {
                 self.method_sigs.insert(mangled, (ret, params));
             }
         }
+        // Detectar protocolos implementados
+        let type_method_names: Vec<String> = type_decl
+            .members
+            .iter()
+            .filter_map(|m| {
+                if let TypeMember::Method(method) = m {
+                    Some(method.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut implemented = Vec::new();
+        for (proto_name, proto_methods) in &self.protocol_methods {
+            if proto_methods
+                .iter()
+                .all(|pm| type_method_names.contains(pm))
+            {
+                implemented.push(proto_name.clone());
+            }
+        }
+        self.type_protocols
+            .insert(type_decl.name.clone(), implemented);
         Ok(())
     }
 
@@ -1045,6 +1110,62 @@ impl IRBuilder {
                     arg_values.push(self.lower_expr(arg)?);
                 }
                 return self.emit_call_with_values(&mangled_name, arg_values);
+            } else if let Some(NormalizedType::Protocol(proto_name)) = obj_type {
+                if let Some(method_idx) = self.get_protocol_method_index(&proto_name, member) {
+                    // 1. Cargar vtable ptr desde offset 0 del objeto
+                    let vtable_ptr = self.fresh_value();
+                    self.emit(IRInstruction::new(IRInstructionKind::Load {
+                        target: vtable_ptr.clone(),
+                        address: IROperand::Value(obj_val.clone()),
+                        ty: "ptr".to_string(),
+                    }))?;
+                    // 2. GEP al slot del método
+                    let slot_ptr = self.fresh_value();
+                    self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                        target: slot_ptr.clone(),
+                        base: IROperand::Value(vtable_ptr),
+                        indices: vec![IROperand::Integer(method_idx as i64)],
+                        element_type: "ptr".to_string(),
+                    }))?;
+                    // 3. Cargar puntero a función
+                    let method_ptr = self.fresh_value();
+                    self.emit(IRInstruction::new(IRInstructionKind::Load {
+                        target: method_ptr.clone(),
+                        address: IROperand::Value(slot_ptr),
+                        ty: "ptr".to_string(),
+                    }))?;
+                    // 4. Preparar argumentos (self + args)
+                    let mut arg_values = vec![obj_val];
+                    for arg in args {
+                        arg_values.push(self.lower_expr(arg)?);
+                    }
+                    // 5. Buscar firma en algún tipo que implemente el protocolo
+                    let mut found_sig = None;
+                    for (type_name, protocols) in &self.type_protocols {
+                        if protocols.contains(&proto_name) {
+                            found_sig = self.get_method_signature(type_name, member);
+                            break;
+                        }
+                    }
+                    let (ret, mut params) = found_sig.unwrap_or((None, vec![]));
+                    let mut param_types = vec!["ptr".to_string()];
+                    param_types.append(&mut params);
+                    let target = self.fresh_value();
+                    self.emit(IRInstruction::new(IRInstructionKind::CallIndirect {
+                        target: target.clone(),
+                        callee_ptr: IROperand::Value(method_ptr),
+                        arguments: arg_values.into_iter().map(IROperand::Value).collect(),
+                        return_type: ret,
+                        param_types,
+                        original: Some(member.clone()),
+                    }))?;
+                    return Ok(target);
+                }
+                let mut arg_values = vec![obj_val];
+                for arg in args {
+                    arg_values.push(self.lower_expr(arg)?);
+                }
+                return self.emit_call_with_values(&format!("member.{}", member), arg_values);
             }
 
             // Fallback genérico

@@ -1,3 +1,5 @@
+use std::fmt::format;
+
 use super::DisplayError;
 use super::span::Span;
 
@@ -7,7 +9,10 @@ pub enum SemanticError {
     // ==================== ERRORES DE VARIABLES ====================
     /// Variable usada pero nunca declarada
     /// Ejemplo: print(x);  // x no existe
-    UndeclaredVariable { name: String, span: Span },
+    UndeclaredVariable {
+        name: String,
+        span: Span,
+    },
 
     /// Variable declarada múltiples veces en el mismo scope
     /// Ejemplo: let x = 5; let x = 10;
@@ -19,14 +24,20 @@ pub enum SemanticError {
 
     /// Variable usada antes de ser inicializada
     /// Ejemplo: let x; print(x);
-    UninitializedVariable { name: String },
+    UninitializedVariable {
+        name: String,
+    },
 
     /// Asignación a variable inmutable (constante)
     /// Ejemplo: const x = 5; x = 10;
-    AssignmentToImmutable { name: String },
+    AssignmentToImmutable {
+        name: String,
+    },
 
     /// Variable declarada pero nunca usada (warning)
-    UnusedVariable { name: String },
+    UnusedVariable {
+        name: String,
+    },
 
     // ==================== ERRORES DE TIPOS ====================
     /// Tipos incompatibles en asignación u operación
@@ -54,15 +65,21 @@ pub enum SemanticError {
     },
 
     /// No se puede inferir el tipo de la expresión
-    CannotInferType { context: String },
+    CannotInferType {
+        context: String,
+    },
 
     /// Tipo no declarado/no existe
     /// Ejemplo: let x: MiTipo = 5;  // MiTipo no existe
-    UndeclaredType { name: String },
+    UndeclaredType {
+        name: String,
+    },
 
     /// Protocolo no declarado/no existe
     /// Ejemplo: let x: MiProtocolo = 5;  // MiProtocolo no existe
-    UndeclaredProtocol { name: String },
+    UndeclaredProtocol {
+        name: String,
+    },
 
     /// Tipos incompatibles en operación de comparación
     /// Ejemplo: 5 == "hola"
@@ -79,16 +96,22 @@ pub enum SemanticError {
     },
 
     /// Target de evaluación que no es válido (ej. asignación a rvalue)
-    InvalidTarget { context: String },
+    InvalidTarget {
+        context: String,
+    },
 
     // ==================== ERRORES DE FUNCIONES ====================
     /// Función no declarada
     /// Ejemplo: foo();  // foo no existe
-    UndeclaredFunction { name: String },
+    UndeclaredFunction {
+        name: String,
+    },
 
     /// Función no definida
     /// Ejemplo: foo();  // foo no está definida
-    UndefinedFunction { name: String },
+    UndefinedFunction {
+        name: String,
+    },
 
     /// Función declarada múltiples veces
     FunctionAlreadyDeclared {
@@ -121,7 +144,9 @@ pub enum SemanticError {
     },
 
     /// Función no debe retornar valor pero lo hace
-    UnexpectedReturnValue { function: String },
+    UnexpectedReturnValue {
+        function: String,
+    },
 
     /// Return con tipo incorrecto
     ReturnTypeMismatch {
@@ -131,10 +156,14 @@ pub enum SemanticError {
     },
 
     /// No todos los caminos de la función retornan un valor
-    NotAllPathsReturn { function: String },
+    NotAllPathsReturn {
+        function: String,
+    },
 
     /// Función recursiva sin caso base detectado (warning)
-    PossibleInfiniteRecursion { function: String },
+    PossibleInfiniteRecursion {
+        function: String,
+    },
 
     // ==================== ERRORES DE CLASES/TIPOS DEFINIDOS ====================
     /// Tipo/clase ya declarada
@@ -190,7 +219,10 @@ pub enum SemanticError {
     },
 
     /// Constructor no encontrado o inválido
-    InvalidConstructor { type_name: String, reason: String },
+    InvalidConstructor {
+        type_name: String,
+        reason: String,
+    },
 
     /// Self usado fuera de un método
     SelfOutsideMethod,
@@ -213,10 +245,15 @@ pub enum SemanticError {
     // ==================== ERRORES DE ARRAYS/COLECCIONES ====================
     /// Tipo no es indexable
     /// Ejemplo: let x = 5; x[0];
-    NotIndexable { type_name: String },
+    NotIndexable {
+        type_name: String,
+    },
 
     /// Índice no es de tipo entero
-    InvalidIndexType { expected: String, found: String },
+    InvalidIndexType {
+        expected: String,
+        found: String,
+    },
 
     /// Elementos de array con tipos inconsistentes
     InconsistentArrayTypes {
@@ -233,27 +270,42 @@ pub enum SemanticError {
     ModuloByZero,
 
     /// Overflow detectado en tiempo de compilación
-    IntegerOverflow { operation: String },
+    IntegerOverflow {
+        operation: String,
+    },
 
     // ==================== ERRORES DE PATRONES (si aplica) ====================
     /// Patrón no exhaustivo en match
-    NonExhaustivePattern { missing: Vec<String> },
+    NonExhaustivePattern {
+        missing: Vec<String>,
+    },
 
     /// Patrón inalcanzable
     UnreachablePattern,
 
     // ==================== OTROS ====================
     /// Referencia cíclica en definiciones
-    CyclicDefinition { names: Vec<String> },
+    CyclicDefinition {
+        names: Vec<String>,
+    },
 
     /// Expresión constante requerida pero no proporcionada
-    NonConstantExpression { context: String },
+    NonConstantExpression {
+        context: String,
+    },
 
     /// Expresión no soportada
-    UnsupportedExpression { expression_type: String },
+    UnsupportedExpression {
+        expression_type: String,
+    },
 
     /// Característica del lenguaje no soportada
-    UnsupportedFeature { feature: String },
+    UnsupportedFeature {
+        feature: String,
+    },
+    UnknownType {
+        name: String,
+    },
 }
 
 impl DisplayError for SemanticError {
@@ -322,6 +374,7 @@ impl DisplayError for SemanticError {
                 first_column,
             } => "E2101",
             SemanticError::UndefinedFunction { name } => "E2102",
+            SemanticError::UnknownType { name } => "E2103",
         }
     }
 
@@ -630,6 +683,9 @@ impl DisplayError for SemanticError {
             }
             SemanticError::UndefinedFunction { name } => {
                 format!("función no definida: {}", name)
+            }
+            SemanticError::UnknownType { name } => {
+                format!("tipo no definido: {}", name)
             }
         }
     }

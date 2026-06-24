@@ -877,12 +877,42 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::For {
-                variable: _,
+                variable,
                 iterable,
                 body,
             } => {
                 let iterable_type = self.analyze_expr(iterable)?;
+
+                // Inferir tipo del elemento del iterable
+                let element_type = match &iterable_type {
+                    NormalizedType::Iterable(inner) => (**inner).clone(),
+                    NormalizedType::Vector(inner) => (**inner).clone(),
+                    NormalizedType::Unknown => NormalizedType::Unknown,
+                    _ => {
+                        self.report_error(SemanticError::InvalidOperandType {
+                            expected: "iterable".to_string(),
+                            found: iterable_type.to_string(),
+                            context: "for".to_string(),
+                        });
+                        NormalizedType::Unknown
+                    }
+                };
+
+                // Declarar la variable de iteración en el scope
+                self.context.symbols.enter_scope();
+                let var_sym = SymbolInfo::Variable {
+                    name: variable.clone(),
+                    type_ref: element_type,
+                    span: expr.span.clone(),
+                };
+                if let Err(e) = self.context.symbols.declare(var_sym) {
+                    self.report_error(e);
+                }
+
                 let body_type = self.analyze_expr(body)?;
+
+                self.context.symbols.exit_scope();
+
                 match self
                     .context
                     .expression_checker

@@ -286,6 +286,27 @@ impl SymbolTable {
             .first_mut()
             .expect("global scope")
             .insert("rand".into(), rand_f);
+        let range_sym = SymbolInfo::Function {
+            name: "range".to_string(),
+            parameters: vec![
+                Parameter::new(
+                    "lo".to_string(),
+                    Some(TypeReference::new("Number".to_string(), Span::default())),
+                    Span::default(),
+                ),
+                Parameter::new(
+                    "hi".to_string(),
+                    Some(TypeReference::new("Number".to_string(), Span::default())),
+                    Span::default(),
+                ),
+            ],
+            return_type: NormalizedType::Iterable(Box::new(NormalizedType::Number)),
+            span: Span::default(),
+        };
+        self.scopes
+            .first_mut()
+            .expect("global scope")
+            .insert("range".into(), range_sym);
     }
 }
 

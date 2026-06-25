@@ -367,6 +367,8 @@ mod real {
                 ("hulk_concat_space", ("ptr", vec!["ptr", "ptr"])),
                 ("strcmp", ("i32", vec!["ptr", "ptr"])),
                 ("pow", ("double", vec!["double", "double"])),
+                ("next", ("i1", vec!["ptr"])), // Range.next() -> Boolean
+                ("current", ("double", vec!["ptr"])),
             ]
             .iter()
             .map(|(name, (ret, params))| {

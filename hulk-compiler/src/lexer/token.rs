@@ -172,6 +172,8 @@ pub enum TokenType {
     // =========================================================================
     /// Operador flecha '=>' (para funciones inline)
     Arrow,
+    // para Functores
+    ThinArrow, // '->'
 
     // =========================================================================
     // Delimitadores
@@ -454,6 +456,7 @@ impl TokenType {
 
             // Lambda
             TokenType::Arrow => "=>",
+            TokenType::ThinArrow => "->",
 
             // Delimiters
             TokenType::LeftParen => "(",

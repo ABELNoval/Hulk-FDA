@@ -86,7 +86,14 @@ impl Lexer {
             // ===================== OPERADORES =====================
             // Operadores simples (un solo carácter)
             '+' => self.simple_token(TokenType::Plus),
-            '-' => self.simple_token(TokenType::Minus),
+            '-' => {
+                if self.peek() == Some('>') {
+                    self.advance();
+                    self.make_token("->", TokenType::ThinArrow, start_line, start_col)
+                } else {
+                    self.make_token("-", TokenType::Minus, start_line, start_col)
+                }
+            }
             '*' => self.simple_token(TokenType::Star),
 
             '/' => self.simple_token(TokenType::Slash),

@@ -659,6 +659,90 @@ impl Parser {
         expr
     }
 
+    /// Intenta parsear una lambda desde un `(` ya consumido.
+    /// Precondición: el token actual DEBE ser `(` (ya consumido por el llamador).
+    ///
+    /// Soporta:
+    ///   () => expr
+    ///   (x, y) => expr
+    ///   (x: Number, y: Number): Number => expr
+    ///   function (x) => expr  (ya manejado en parse_primary, este es para el caso sin 'function')
+    ///
+    /// Retorna Some(Expr::lambda) si es lambda válida, None si no lo es.
+    fn try_parse_lambda(&mut self) -> Option<Expr> {
+        // Guardar posición por si no es lambda
+        let saved_pos = self.cursor.current_position();
+        let start_span = self.cursor.peek().span.clone();
+
+        // Consumir '('
+        if !self.cursor.match_token(&TokenType::LeftParen) {
+            return None;
+        }
+
+        let mut parameters = Vec::new();
+
+        // Si no es ')' vacío, parsear parámetros
+        if !self.cursor.check(&TokenType::RightParen) {
+            loop {
+                // Esperar identificador
+                let name_token = self.cursor.peek().clone();
+                let name = match &name_token.token_type {
+                    TokenType::Identifier(n) => {
+                        self.cursor.advance();
+                        n.clone()
+                    }
+                    _ => {
+                        // No es identificador, no es lambda
+                        self.cursor.set_position(saved_pos);
+                        return None;
+                    }
+                };
+
+                // Tipo opcional: : Type
+                let annotation = if self.cursor.match_token(&TokenType::Colon) {
+                    Some(self.parse_type_reference())
+                } else {
+                    None
+                };
+
+                parameters.push(Parameter::new(name, annotation, name_token.span));
+
+                // Más parámetros?
+                if self.cursor.match_token(&TokenType::Comma) {
+                    continue;
+                }
+                break;
+            }
+        }
+
+        // Esperar ')'
+        if !self.cursor.match_token(&TokenType::RightParen) {
+            // Paréntesis no cerrado, no es lambda válida
+            self.cursor.set_position(saved_pos);
+            return None;
+        }
+
+        // Tipo de retorno opcional: ): Type =>
+        let return_type = if self.cursor.match_token(&TokenType::Colon) {
+            Some(self.parse_type_reference())
+        } else {
+            None
+        };
+
+        // Esperar '=>'
+        if !self.cursor.match_token(&TokenType::Arrow) {
+            // No hay =>, no es lambda
+            self.cursor.set_position(saved_pos);
+            return None;
+        }
+
+        // ES UNA LAMBDA. Parsear body.
+        let body = self.parse_expression();
+        let span = start_span.merge(&body.span);
+
+        Some(Expr::lambda(parameters, return_type, body, span))
+    }
+
     fn parse_vector(&mut self, start_span: Span) -> Expr {
         let mut elements = Vec::new();
 
@@ -728,6 +812,12 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Expr {
         if self.cursor.check(&TokenType::LeftParen) {
+            // Intentar lambda primero: (params) => body
+            if let Some(lambda) = self.try_parse_lambda() {
+                return lambda;
+            }
+
+            // No es lambda, es grouping
             let open_token = self.cursor.advance();
             let expr = self.parse_expression();
             if self.cursor.check(&TokenType::RightParen) {
@@ -827,12 +917,11 @@ impl Parser {
                 Expr::literal(Literal::Number(0.0), span)
             }
             TokenType::LeftBracket => {
-                let token = self.cursor.advance();
-
-                return self.parse_vector(token.span);
+                let start_span = token.span; // span del '[' ya consumido
+                self.parse_vector(start_span)
             }
             TokenType::Function => {
-                let start_span = self.cursor.advance().span;
+                let start_span = token.span;
                 if self.expect(TokenType::LeftParen).is_err() {
                     return Expr::literal(Literal::Number(0.0), start_span);
                 }
@@ -875,26 +964,36 @@ impl Parser {
 
         match &type_token.token_type {
             TokenType::LeftParen => {
-                // Tipo función: (T1, T2) -> R
                 let start_span = self.cursor.advance().span;
                 let mut params = Vec::new();
+
                 if !self.cursor.check(&TokenType::RightParen) {
                     loop {
-                        let param_name_tok = self.cursor.peek().clone();
-                        let param_name = match &param_name_tok.token_type {
-                            TokenType::Identifier(n) => {
-                                self.cursor.advance();
-                                n.clone()
+                        let checkpoint = self.cursor.current_position();
+                        let first_tok = self.cursor.peek().clone();
+
+                        // Intentar: nombre: Tipo
+                        if let TokenType::Identifier(name) = &first_tok.token_type {
+                            self.cursor.advance();
+                            if self.cursor.match_token(&TokenType::Colon) {
+                                let ty = self.parse_type_reference();
+                                params.push(Parameter::new(name.clone(), Some(ty), first_tok.span));
+                            } else {
+                                // No era nombre: Tipo, era solo Tipo
+                                self.cursor.set_position(checkpoint);
+                                let ty = self.parse_type_reference();
+                                params.push(Parameter::new(
+                                    "_".to_string(),
+                                    Some(ty),
+                                    first_tok.span,
+                                ));
                             }
-                            _ => break,
-                        };
-                        let annotation = if self.cursor.match_token(&TokenType::Colon) {
-                            Some(self.parse_type_reference())
                         } else {
-                            None
-                        };
-                        let span = param_name_tok.span.clone();
-                        params.push(Parameter::new(param_name, annotation, span));
+                            // No empieza con identificador, es solo un tipo
+                            let ty = self.parse_type_reference();
+                            params.push(Parameter::new("_".to_string(), Some(ty), first_tok.span));
+                        }
+
                         if !self.cursor.match_token(&TokenType::Comma) {
                             break;
                         }

@@ -367,8 +367,10 @@ mod real {
                 ("hulk_concat_space", ("ptr", vec!["ptr", "ptr"])),
                 ("strcmp", ("i32", vec!["ptr", "ptr"])),
                 ("pow", ("double", vec!["double", "double"])),
-                ("next", ("i1", vec!["ptr"])), // Range.next() -> Boolean
-                ("current", ("double", vec!["ptr"])),
+                ("range", ("ptr", vec!["double", "double", "ptr"])),
+                ("Range_next", ("i1", vec!["ptr"])),
+                ("Range_current", ("double", vec!["ptr"])),
+                ("range", ("ptr", vec!["double", "double"])),
             ]
             .iter()
             .map(|(name, (ret, params))| {
@@ -1244,8 +1246,52 @@ mod real {
                                 then_block,
                                 else_block,
                             } => {
-                                let cond =
+                                let cond_val =
                                     lower_operand(&ctx, &builder, &llvm_mod, &allocas, condition)?;
+
+                                // Asegurar que la condición sea i1 (bool)
+                                let cond_i1 = if cond_val.get_type().is_int_type() {
+                                    let int_val = cond_val.into_int_value();
+                                    if int_val.get_type().get_bit_width() == 1 {
+                                        int_val
+                                    } else {
+                                        builder
+                                            .build_int_truncate(
+                                                int_val,
+                                                ctx.bool_type(),
+                                                "cond_trunc",
+                                            )
+                                            .map_err(|err| CodegenError::BackendFailure {
+                                                message: format!(
+                                                    "failed to truncate condition: {:?}",
+                                                    err
+                                                ),
+                                            })?
+                                    }
+                                } else if cond_val.get_type().is_float_type() {
+                                    let zero = ctx.f64_type().const_float(0.0);
+                                    builder
+                                        .build_float_compare(
+                                            inkwell::FloatPredicate::ONE,
+                                            cond_val.into_float_value(),
+                                            zero,
+                                            "cond_cmp",
+                                        )
+                                        .map_err(|err| CodegenError::BackendFailure {
+                                            message: format!(
+                                                "failed to compare float condition: {:?}",
+                                                err
+                                            ),
+                                        })?
+                                } else {
+                                    return Err(CodegenError::BackendFailure {
+                                        message: format!(
+                                            "branch condition must be integer or float, got {:?}",
+                                            cond_val.get_type()
+                                        ),
+                                    });
+                                };
+
                                 let then_bb = *block_map.get(&then_block.0).ok_or_else(|| {
                                     CodegenError::BackendFailure {
                                         message: format!(
@@ -1263,11 +1309,7 @@ mod real {
                                     }
                                 })?;
                                 builder
-                                    .build_conditional_branch(
-                                        cond.into_int_value(),
-                                        then_bb,
-                                        else_bb,
-                                    )
+                                    .build_conditional_branch(cond_i1, then_bb, else_bb)
                                     .map_err(|err| CodegenError::BackendFailure {
                                         message: format!("failed to emit branch: {:?}", err),
                                     })?;

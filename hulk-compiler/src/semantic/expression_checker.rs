@@ -422,17 +422,26 @@ impl ExpressionChecker {
         &self,
         iterable_type: &NormalizedType,
         body_type: &NormalizedType,
+        environment: &TypeEnvironment, // NUEVO: necesitamos el entorno para verificar protocolos
     ) -> SemanticResult<ExpressionType> {
-        match iterable_type {
-            NormalizedType::Iterable(_) | NormalizedType::Vector(_) => {
-                Ok(ExpressionType::value(body_type.clone()))
+        let is_iterable = match iterable_type {
+            NormalizedType::Iterable(_) | NormalizedType::Vector(_) => true,
+            NormalizedType::Named(type_name) => {
+                // Verificar si el tipo implementa el protocolo Iterable
+                environment.type_implements(type_name, "Iterable")
             }
-            NormalizedType::Unknown => Ok(ExpressionType::value(body_type.clone())),
-            other => Err(SemanticError::InvalidOperandType {
+            NormalizedType::Unknown => true, // Unknown pasa (recuperación de errores)
+            _ => false,
+        };
+
+        if is_iterable {
+            Ok(ExpressionType::value(body_type.clone()))
+        } else {
+            Err(SemanticError::InvalidOperandType {
                 expected: "iterable".to_string(),
-                found: other.to_string(),
+                found: iterable_type.to_string(),
                 context: "for".to_string(),
-            }),
+            })
         }
     }
 

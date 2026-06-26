@@ -209,6 +209,95 @@ impl IRBuilder {
                 values: func_names,
             });
         }
+        // Vtable para Range (builtin)
+        let range_methods = vec![
+            ("next".to_string(), "Range_next".to_string()),
+            ("current".to_string(), "Range_current".to_string()),
+        ];
+        self.type_vtables
+            .insert("Range".to_string(), range_methods.clone());
+        let range_func_names: Vec<String> = range_methods.iter().map(|(_, m)| m.clone()).collect();
+        self.module.add_global(IRGlobal {
+            name: "__vtable_Range".to_string(),
+            element_ty: "ptr".to_string(),
+            values: range_func_names,
+        });
+    }
+
+    /// Emite una llamada a método via dispatch dinámico (vtable) o estático.
+    /// Usado por el for loop para llamar a next() y current() en cualquier iterable.
+    fn emit_method_call(
+        &mut self,
+        obj_val: &IRValueId,
+        obj_type: &Option<NormalizedType>,
+        method_name: &str,
+        extra_args: Vec<IRValueId>,
+    ) -> Result<IRValueId, IRLoweringError> {
+        if let Some(NormalizedType::Named(type_name)) = obj_type {
+            // 1. Intentar dispatch dinámico via vtable
+            if let Some(method_idx) = self.get_vtable_index(type_name, method_name) {
+                // Cargar vtable ptr
+                let vtable_ptr = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::Load {
+                    target: vtable_ptr.clone(),
+                    address: IROperand::Value(obj_val.clone()),
+                    ty: "ptr".to_string(),
+                }))?;
+
+                // GEP al slot
+                let slot_ptr = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                    target: slot_ptr.clone(),
+                    base: IROperand::Value(vtable_ptr),
+                    indices: vec![IROperand::Integer(method_idx as i64)],
+                    element_type: "ptr".to_string(),
+                }))?;
+
+                // Load puntero a función
+                let method_ptr = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::Load {
+                    target: method_ptr.clone(),
+                    address: IROperand::Value(slot_ptr),
+                    ty: "ptr".to_string(),
+                }))?;
+
+                // Preparar argumentos (self + extras)
+                let mut all_args = vec![obj_val.clone()];
+                all_args.extend(extra_args);
+
+                // Obtener firma
+                let (ret, mut params) = self
+                    .get_method_signature(type_name, method_name)
+                    .unwrap_or((None, vec![]));
+                let mut param_types = vec!["ptr".to_string()];
+                param_types.append(&mut params);
+
+                let target = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::CallIndirect {
+                    target: target.clone(),
+                    callee_ptr: IROperand::Value(method_ptr),
+                    arguments: all_args.into_iter().map(IROperand::Value).collect(),
+                    return_type: ret,
+                    param_types,
+                    original: Some(method_name.to_string()),
+                }))?;
+                return Ok(target);
+            }
+
+            // 2. Fallback a dispatch estático (mangled name)
+            let owner = self
+                .find_method_owner(type_name, method_name)
+                .unwrap_or_else(|| type_name.clone());
+            let mangled_name = format!("{}_{}", owner, method_name);
+            let mut all_args = vec![obj_val.clone()];
+            all_args.extend(extra_args);
+            return self.emit_call_with_values(&mangled_name, all_args);
+        }
+
+        // Fallback genérico
+        let mut all_args = vec![obj_val.clone()];
+        all_args.extend(extra_args);
+        self.emit_call_with_values(&format!("member.{}", method_name), all_args)
     }
 
     fn get_vtable_index(&self, type_name: &str, method: &str) -> Option<usize> {
@@ -1248,6 +1337,21 @@ impl IRBuilder {
 
             return self.emit_call_with_values(runtime_print, arg_values);
         }
+        if callee_name == "range" {
+            // Pasar vtable como tercer argumento
+            let vtable_global = "__vtable_Range";
+            let vtable_val = self.fresh_value();
+            self.emit(IRInstruction::new(IRInstructionKind::Assign {
+                target: vtable_val.clone(),
+                value: IROperand::Global(vtable_global.to_string()),
+                original: None,
+            }))?;
+
+            let mut args_with_vtable = arg_values;
+            args_with_vtable.push(vtable_val);
+
+            return self.emit_call_with_values("range", args_with_vtable);
+        }
 
         self.emit_call_with_values(&callee_name, arg_values)
     }
@@ -1507,6 +1611,8 @@ impl IRBuilder {
         let current_block = self.current_block_id()?.clone();
 
         let iterable_value = self.lower_expr(iterable)?;
+        let iterable_type = self.expr_types.get(&iterable.id).cloned();
+
         let cond_name = self.fresh_block_name("for_cond");
         let body_name = self.fresh_block_name("for_body");
         let exit_name = self.fresh_block_name("for_exit");
@@ -1524,16 +1630,19 @@ impl IRBuilder {
             target: cond_block.clone(),
         }))?;
 
+        // CONDICIÓN: iterable.next()
         self.set_current_block(function_name.clone(), cond_name)?;
-        let has_next = self.emit_call_with_values("iter_has_next", vec![iterable_value.clone()])?;
+        let next_result = self.emit_method_call(&iterable_value, &iterable_type, "next", vec![])?;
+
         self.link_blocks(&function_name, &cond_block, &body_block)?;
         self.link_blocks(&function_name, &cond_block, &exit_block)?;
         self.emit(IRInstruction::new(IRInstructionKind::Branch {
-            condition: IROperand::Value(has_next),
+            condition: IROperand::Value(next_result),
             then_block: body_block.clone(),
             else_block: exit_block.clone(),
         }))?;
 
+        // CUERPO: x = iterable.current(); body
         self.loop_stack.push(LoopContext {
             continue_block: cond_block.clone(),
             break_block: exit_block.clone(),
@@ -1541,9 +1650,13 @@ impl IRBuilder {
 
         self.set_current_block(function_name.clone(), body_name)?;
         self.push_scope();
-        let next_item = self.emit_call_with_values("iter_next", vec![iterable_value])?;
-        self.define_variable(variable, next_item);
+
+        let current_result =
+            self.emit_method_call(&iterable_value, &iterable_type, "current", vec![])?;
+        self.define_variable(variable, current_result);
+
         let _ = self.lower_expr(body)?;
+
         if !self.current_block_terminated()? {
             let body_current = self.current_block_id()?.clone();
             self.link_blocks(&function_name, &body_current, &cond_block)?;
@@ -1551,9 +1664,11 @@ impl IRBuilder {
                 target: cond_block,
             }))?;
         }
-        // self.pop_scope();
+
+        self.pop_scope();
         self.loop_stack.pop();
 
+        // EXIT
         self.set_current_block(function_name, exit_name)?;
         let result = self.emit_constant_boolean(false, IRValueKind::Temporary)?;
         Ok(result)

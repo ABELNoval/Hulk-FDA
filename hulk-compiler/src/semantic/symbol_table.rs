@@ -286,6 +286,7 @@ impl SymbolTable {
             .first_mut()
             .expect("global scope")
             .insert("rand".into(), rand_f);
+
         let range_sym = SymbolInfo::Function {
             name: "range".to_string(),
             parameters: vec![
@@ -307,6 +308,36 @@ impl SymbolTable {
             .first_mut()
             .expect("global scope")
             .insert("range".into(), range_sym);
+
+        // --- Iterable protocol (builtin) ---
+        let iterable_sym = SymbolInfo::Protocol {
+            name: "Iterable".to_string(),
+            span: Span::default(),
+        };
+        self.scopes
+            .first_mut()
+            .expect("global scope")
+            .insert("Iterable".to_string(), iterable_sym);
+
+        // --- Range type (builtin) ---
+        let range_type_sym = SymbolInfo::Type {
+            name: "Range".to_string(),
+            span: Span::default(),
+        };
+        self.scopes
+            .first_mut()
+            .expect("global scope")
+            .insert("Range".to_string(), range_type_sym);
+
+        // --- Object type (builtin root) ---
+        let object_sym = SymbolInfo::Type {
+            name: "Object".to_string(),
+            span: Span::default(),
+        };
+        self.scopes
+            .first_mut()
+            .expect("global scope")
+            .insert("Object".to_string(), object_sym);
     }
 }
 

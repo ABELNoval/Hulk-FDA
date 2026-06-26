@@ -127,11 +127,113 @@ pub struct TypeEnvironment {
 impl TypeEnvironment {
     /// Crea un nuevo entorno de tipos vacío
     pub fn new() -> Self {
-        Self {
+        let mut env = Self {
             user_types: HashMap::new(),
             protocols: HashMap::new(),
             type_implements: HashMap::new(),
-        }
+        };
+
+        // Register builtin Range type
+        let range_info = TypeInfo {
+            name: "Range".to_string(),
+            parameters: vec![
+                crate::parser::ast::Parameter::new(
+                    "min".to_string(),
+                    Some(crate::parser::ast::TypeReference::new(
+                        "Number".to_string(),
+                        Span::default(),
+                    )),
+                    Span::default(),
+                ),
+                crate::parser::ast::Parameter::new(
+                    "max".to_string(),
+                    Some(crate::parser::ast::TypeReference::new(
+                        "Number".to_string(),
+                        Span::default(),
+                    )),
+                    Span::default(),
+                ),
+            ],
+            parent: None,
+            methods: vec![
+                // next(): Boolean
+                crate::parser::ast::FunctionDeclaration {
+                    name: "next".to_string(),
+                    parameters: vec![],
+                    return_type: Some(crate::parser::ast::TypeReference::new(
+                        "Boolean".to_string(),
+                        Span::default(),
+                    )),
+                    body: crate::parser::ast::Expr::literal(
+                        crate::parser::ast::Literal::Boolean(true),
+                        Span::default(),
+                    ),
+                },
+                // current(): Number
+                crate::parser::ast::FunctionDeclaration {
+                    name: "current".to_string(),
+                    parameters: vec![],
+                    return_type: Some(crate::parser::ast::TypeReference::new(
+                        "Number".to_string(),
+                        Span::default(),
+                    )),
+                    body: crate::parser::ast::Expr::literal(
+                        crate::parser::ast::Literal::Number(0.0),
+                        Span::default(),
+                    ),
+                },
+            ],
+            properties: vec![],
+            implemented_protocols: vec!["Iterable".to_string()],
+            span: Span::default(),
+        };
+        env.user_types.insert("Range".to_string(), range_info);
+
+        // Register builtin Iterable protocol
+        let iterable_protocol = ProtocolInfo {
+            name: "Iterable".to_string(),
+            members: vec![
+                crate::parser::ast::ProtocolMethodSignature {
+                    name: "next".to_string(),
+                    parameters: vec![],
+                    return_type: crate::parser::ast::TypeReference::new(
+                        "Boolean".to_string(),
+                        Span::default(),
+                    ),
+                    span: Span::default(),
+                },
+                crate::parser::ast::ProtocolMethodSignature {
+                    name: "current".to_string(),
+                    parameters: vec![],
+                    return_type: crate::parser::ast::TypeReference::new(
+                        "Object".to_string(),
+                        Span::default(),
+                    ),
+                    span: Span::default(),
+                },
+            ],
+            extends: vec![],
+            span: Span::default(),
+        };
+        env.protocols
+            .insert("Iterable".to_string(), iterable_protocol);
+
+        // Register that Range implements Iterable
+        env.type_implements
+            .insert("Range".to_string(), vec!["Iterable".to_string()]);
+
+        let object_info = TypeInfo {
+            name: "Object".to_string(),
+            parameters: vec![],
+            parent: None,
+            methods: vec![],
+            properties: vec![],
+            implemented_protocols: vec![],
+            span: Span::default(),
+        };
+        env.user_types.insert("Object".to_string(), object_info);
+
+        env
     }
 
     pub fn common_supertype(
@@ -364,7 +466,7 @@ impl TypeEnvironment {
 
     /// Comprueba si un nombre corresponde a un tipo builtin conocido
     pub fn is_builtin_name(name: &str) -> bool {
-        matches!(name, "Number" | "String" | "Boolean")
+        matches!(name, "Number" | "String" | "Boolean" | "Object")
     }
 
     /// Verifica si dos tipos son iguales

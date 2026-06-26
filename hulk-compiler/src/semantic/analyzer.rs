@@ -1056,6 +1056,37 @@ impl SemanticAnalyzer {
                     NormalizedType::Iterable(inner) => (**inner).clone(),
                     NormalizedType::Vector(inner) => (**inner).clone(),
                     NormalizedType::Unknown => NormalizedType::Unknown,
+                    NormalizedType::Named(type_name) => {
+                        // Si implementa Iterable, inferir el tipo del current()
+                        if self.context.types.type_implements(type_name, "Iterable") {
+                            // Buscar el método current() en el tipo para obtener su tipo de retorno
+                            if let Some(type_info) = self.context.types.get_type(type_name) {
+                                if let Some(current_method) =
+                                    type_info.methods.iter().find(|m| m.name == "current")
+                                {
+                                    if let Some(ret_type_ref) = &current_method.return_type {
+                                        self.context
+                                            .types
+                                            .validate_type_reference(ret_type_ref)
+                                            .unwrap_or(NormalizedType::Unknown)
+                                    } else {
+                                        NormalizedType::Unknown
+                                    }
+                                } else {
+                                    NormalizedType::Unknown
+                                }
+                            } else {
+                                NormalizedType::Unknown
+                            }
+                        } else {
+                            self.report_error(SemanticError::InvalidOperandType {
+                                expected: "iterable".to_string(),
+                                found: iterable_type.to_string(),
+                                context: "for".to_string(),
+                            });
+                            NormalizedType::Unknown
+                        }
+                    }
                     _ => {
                         self.report_error(SemanticError::InvalidOperandType {
                             expected: "iterable".to_string(),
@@ -1081,11 +1112,11 @@ impl SemanticAnalyzer {
 
                 self.context.symbols.exit_scope();
 
-                match self
-                    .context
-                    .expression_checker
-                    .check_for_expression(&iterable_type, &body_type)
-                {
+                match self.context.expression_checker.check_for_expression(
+                    &iterable_type,
+                    &body_type,
+                    &self.context.types,
+                ) {
                     Ok(res) => Ok(res.type_),
                     Err(e) => {
                         self.report_error(e.clone());

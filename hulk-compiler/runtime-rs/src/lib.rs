@@ -3,6 +3,9 @@ use std::os::raw::{c_char, c_double, c_int, c_long, c_void};
 extern "C" {
     fn __entry() -> c_long;
 }
+extern "C" {
+    static __vtable_Range: [c_void; 0]; // forward declaration, se linca desde LLVM
+}
 
 // =============================================================================
 // ESTRUCTURAS DE DATOS
@@ -19,6 +22,8 @@ pub struct HulkVector {
 /// Rango iterable de HULK
 #[repr(C)]
 pub struct Range {
+    pub vtable: *mut c_void, // offset 0: puntero a vtable
+    pub size: c_long,
     pub min: c_double,
     pub max: c_double,
     pub current: c_double,
@@ -133,9 +138,10 @@ pub extern "C" fn hulk_strlen(p: *const c_char) -> c_long {
 // =============================================================================
 
 #[no_mangle]
-pub extern "C" fn range(lo: c_double, hi: c_double) -> *mut c_void {
+pub extern "C" fn range(lo: c_double, hi: c_double, vtable: *mut c_void) -> *mut c_void {
     let r = unsafe { libc::malloc(std::mem::size_of::<Range>()) as *mut Range };
     unsafe {
+        (*r).vtable = vtable;
         (*r).min = lo;
         (*r).max = hi;
         (*r).current = lo - 1.0;
@@ -144,7 +150,7 @@ pub extern "C" fn range(lo: c_double, hi: c_double) -> *mut c_void {
 }
 
 #[no_mangle]
-pub extern "C" fn next(range_ptr: *mut c_void) -> bool {
+pub extern "C" fn Range_next(range_ptr: *mut c_void) -> bool {
     if range_ptr.is_null() {
         return false;
     }
@@ -156,7 +162,7 @@ pub extern "C" fn next(range_ptr: *mut c_void) -> bool {
 }
 
 #[no_mangle]
-pub extern "C" fn current(range_ptr: *mut c_void) -> c_double {
+pub extern "C" fn Range_current(range_ptr: *mut c_void) -> c_double {
     if range_ptr.is_null() {
         return 0.0;
     }

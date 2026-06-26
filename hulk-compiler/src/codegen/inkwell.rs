@@ -200,11 +200,6 @@ mod real {
                         }
                     })?
                 } else {
-                    eprintln!("DEBUG: value_id='{}'", value_id.0);
-                    eprintln!(
-                        "DEBUG: allocas keys: {:?}",
-                        allocas.keys().collect::<Vec<_>>()
-                    );
                     return Err(CodegenError::BackendFailure {
                         message: format!("value '{}' not found in allocas", value_id.0),
                     });
@@ -448,6 +443,22 @@ mod real {
                     function_type_for(&ctx, function.return_type.as_deref(), &param_types);
                 let _ = llvm_mod.add_function(&function.name, fn_type, None);
             }
+            let runtime_vtable_fns = ["Range_next", "Range_current"];
+            for name in &runtime_vtable_fns {
+                if llvm_mod.get_function(name).is_none() {
+                    // Obtener firma de known_functions
+                    if let Some((ret, params)) = known_functions.get(*name) {
+                        let param_types: Vec<BasicTypeEnum> = params
+                            .iter()
+                            .map(|p| {
+                                map_type(&ctx, Some(p)).unwrap_or_else(|| ctx.f64_type().into())
+                            })
+                            .collect();
+                        let fn_type = function_type_for(&ctx, Some(ret.as_str()), &param_types);
+                        llvm_mod.add_function(name, fn_type, None);
+                    }
+                }
+            }
 
             // Pre-declare all module functions so forward references work
             for function in &module.functions {
@@ -524,10 +535,6 @@ mod real {
                 for (idx, param) in function.parameters.iter().enumerate() {
                     if let Some(llvm_param) = fn_val.get_nth_param(idx as u32) {
                         let param_name = param.id.0.trim_start_matches('%');
-                        eprintln!(
-                            "DEBUG: mat param '{}' for fn '{}'",
-                            param_name, function.name
-                        );
                         llvm_param.set_name(param_name);
                         let param_type = map_type(&ctx, param.ty.as_deref())
                             .unwrap_or_else(|| llvm_param.get_type().into());
@@ -545,11 +552,6 @@ mod real {
                         let prefixed_param = format!("%{}", canonical_param);
                         allocas.insert(canonical_param, (slot, param_type));
                         allocas.insert(prefixed_param, (slot, param_type));
-                    } else {
-                        eprintln!(
-                            "DEBUG: NO param {} for fn '{}' (fn_type mismatch?)",
-                            idx, function.name
-                        );
                     }
                 }
 

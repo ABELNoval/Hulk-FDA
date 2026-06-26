@@ -233,10 +233,6 @@ impl IRBuilder {
         method_name: &str,
         extra_args: Vec<IRValueId>,
     ) -> Result<IRValueId, IRLoweringError> {
-        eprintln!(
-            "DEBUG emit_method_call: obj_type={:?}, method={}",
-            obj_type, method_name
-        );
         if let Some(NormalizedType::Named(type_name)) = obj_type {
             // 1. Intentar dispatch dinámico via vtable
             if let Some(method_idx) = self.get_vtable_index(type_name, method_name) {
@@ -300,17 +296,12 @@ impl IRBuilder {
 
         // NUEVO: Dispatch dinámico para Iterable/Protocol via vtable
         if let Some(NormalizedType::Iterable(_)) | Some(NormalizedType::Protocol(_)) = obj_type {
-            eprintln!("DEBUG: ENTERED Iterable/Protocol branch!");
             let proto = match obj_type {
                 Some(NormalizedType::Protocol(p)) => p.as_str(),
                 _ => "Iterable",
             };
 
             if let Some(method_idx) = self.get_protocol_method_index(proto, method_name) {
-                eprintln!(
-                    "DEBUG: method_idx={} for {}.{}",
-                    method_idx, proto, method_name
-                );
                 // 1. Cargar vtable ptr desde offset 0 del objeto
                 let vtable_ptr = self.fresh_value();
                 self.emit(IRInstruction::new(IRInstructionKind::Load {
@@ -357,11 +348,6 @@ impl IRBuilder {
                     original: Some(method_name.to_string()),
                 }))?;
                 return Ok(target);
-            } else {
-                eprintln!(
-                    "DEBUG: get_protocol_method_index returned None for {}.{}",
-                    proto, method_name
-                );
             }
         }
 
@@ -1688,7 +1674,6 @@ impl IRBuilder {
 
         let iterable_value = self.lower_expr(iterable)?;
         let iterable_type = self.expr_types.get(&iterable.id).cloned();
-
         let cond_name = self.fresh_block_name("for_cond");
         let body_name = self.fresh_block_name("for_body");
         let exit_name = self.fresh_block_name("for_exit");

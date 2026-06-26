@@ -774,12 +774,12 @@ impl SemanticAnalyzer {
                     for arg in arguments {
                         let _ = self.analyze_expr(arg)?;
                     }
-                    if let Some((type_name, method_name)) = &self.current_method_context {
-                        if let Some(parent_name) = self.type_parents.get(type_name) {
-                            let parent_key = format!("{}_{}", parent_name, method_name);
-                            if let Some((_, ret_type)) = self.method_signatures.get(&parent_key) {
-                                return Ok(ret_type.clone());
-                            }
+                    if let Some((type_name, method_name)) = &self.current_method_context
+                        && let Some(parent_name) = self.type_parents.get(type_name)
+                    {
+                        let parent_key = format!("{}_{}", parent_name, method_name);
+                        if let Some((_, ret_type)) = self.method_signatures.get(&parent_key) {
+                            return Ok(ret_type.clone());
                         }
                     }
                     return Ok(NormalizedType::Unknown);
@@ -787,6 +787,24 @@ impl SemanticAnalyzer {
 
                 // Caso 3: función global identificador
                 if let ExprKind::Identifier(name) = &callee.kind {
+                    if name == "range" {
+                        let mut arg_types = Vec::new();
+                        for arg in arguments {
+                            arg_types.push(self.analyze_expr(arg)?);
+                        }
+                        let ty = self.context.expression_checker.check_function_call(
+                            name,
+                            &arg_types,
+                            Some(&[
+                                ("lo".to_string(), NormalizedType::Number),
+                                ("hi".to_string(), NormalizedType::Number),
+                            ]),
+                            Some(&NormalizedType::Iterable(Box::new(NormalizedType::Number))),
+                            &self.context.types,
+                        )?;
+                        self.context.expr_types.insert(expr.id, ty.type_.clone());
+                        return Ok(ty.type_);
+                    }
                     let mut arg_types = Vec::new();
                     for arg in arguments {
                         arg_types.push(self.analyze_expr(arg)?);
@@ -830,19 +848,25 @@ impl SemanticAnalyzer {
                         }
                     };
 
-                    return match self.context.expression_checker.check_function_call(
-                        name,
-                        &arg_types,
-                        expected_params.as_deref(),
-                        expected_return.as_ref(),
-                        &self.context.types,
-                    ) {
-                        Ok(res) => Ok(res.type_),
-                        Err(e) => {
-                            self.report_error(e.clone());
+                    let result: Result<NormalizedType, SemanticError> = self
+                        .context
+                        .expression_checker
+                        .check_function_call(
+                            name,
+                            &arg_types,
+                            expected_params.as_deref(),
+                            expected_return.as_ref(),
+                            &self.context.types,
+                        )
+                        .map(|res| res.type_)
+                        .or_else(|e| {
+                            self.report_error(e);
                             Ok(NormalizedType::Unknown)
-                        }
-                    };
+                        });
+                    self.context
+                        .expr_types
+                        .insert(expr.id, result.clone().unwrap_or(NormalizedType::Unknown));
+                    return result;
                 }
 
                 // Fallback
@@ -1287,6 +1311,10 @@ impl SemanticAnalyzer {
     /// Reporta un error
     pub fn report_error(&mut self, error: SemanticError) {
         self.context.push_error(error);
+    }
+
+    pub fn take_expr_types(&mut self) -> std::collections::HashMap<usize, NormalizedType> {
+        std::mem::take(&mut self.context.expr_types)
     }
 }
 

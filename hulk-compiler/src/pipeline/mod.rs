@@ -115,18 +115,14 @@ impl CompilationPipeline {
                 codegen: None,
             });
         }
-
         // Build IR, injecting semantic expression types so lowering can rely on
         // previously-computed types (used e.g. by print lowering).
         let mut builder = IRBuilder::new("lowered");
-        builder.set_expr_types(analyzer.context().expr_types.clone());
+        builder.set_expr_types(analyzer.take_expr_types());
         let mut ir = builder
             .lower_program(&program)
             .map_err(|error| CompilationError::internal(error.to_string()))?;
         // run_ssa_renaming(&mut ir);
-        eprintln!("=== IR DUMP ===");
-        eprintln!("{}", ir.fmt_display());
-        eprintln!("===============");
 
         if stage == PipelineStage::Ir {
             return Ok(PipelineReport {

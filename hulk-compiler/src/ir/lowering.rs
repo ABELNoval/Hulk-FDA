@@ -233,6 +233,10 @@ impl IRBuilder {
         method_name: &str,
         extra_args: Vec<IRValueId>,
     ) -> Result<IRValueId, IRLoweringError> {
+        eprintln!(
+            "DEBUG emit_method_call: obj_type={:?}, method={}",
+            obj_type, method_name
+        );
         if let Some(NormalizedType::Named(type_name)) = obj_type {
             // 1. Intentar dispatch dinámico via vtable
             if let Some(method_idx) = self.get_vtable_index(type_name, method_name) {
@@ -292,6 +296,73 @@ impl IRBuilder {
             let mut all_args = vec![obj_val.clone()];
             all_args.extend(extra_args);
             return self.emit_call_with_values(&mangled_name, all_args);
+        }
+
+        // NUEVO: Dispatch dinámico para Iterable/Protocol via vtable
+        if let Some(NormalizedType::Iterable(_)) | Some(NormalizedType::Protocol(_)) = obj_type {
+            eprintln!("DEBUG: ENTERED Iterable/Protocol branch!");
+            let proto = match obj_type {
+                Some(NormalizedType::Protocol(p)) => p.as_str(),
+                _ => "Iterable",
+            };
+
+            if let Some(method_idx) = self.get_protocol_method_index(proto, method_name) {
+                eprintln!(
+                    "DEBUG: method_idx={} for {}.{}",
+                    method_idx, proto, method_name
+                );
+                // 1. Cargar vtable ptr desde offset 0 del objeto
+                let vtable_ptr = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::Load {
+                    target: vtable_ptr.clone(),
+                    address: IROperand::Value(obj_val.clone()),
+                    ty: "ptr".to_string(),
+                }))?;
+
+                // 2. GEP al slot del método
+                let slot_ptr = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::GetElementPtr {
+                    target: slot_ptr.clone(),
+                    base: IROperand::Value(vtable_ptr),
+                    indices: vec![IROperand::Integer(method_idx as i64)],
+                    element_type: "ptr".to_string(),
+                }))?;
+
+                // 3. Cargar puntero a función
+                let method_ptr = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::Load {
+                    target: method_ptr.clone(),
+                    address: IROperand::Value(slot_ptr),
+                    ty: "ptr".to_string(),
+                }))?;
+
+                // 4. Preparar argumentos (self primero)
+                let mut all_args = vec![obj_val.clone()];
+                all_args.extend(extra_args);
+
+                // 5. Firma conocida para métodos de Iterable
+                let (ret, param_types) = match method_name {
+                    "next" => (Some("i1".to_string()), vec!["ptr".to_string()]),
+                    "current" => (Some("double".to_string()), vec!["ptr".to_string()]),
+                    _ => (None, vec!["ptr".to_string()]),
+                };
+
+                let target = self.fresh_value();
+                self.emit(IRInstruction::new(IRInstructionKind::CallIndirect {
+                    target: target.clone(),
+                    callee_ptr: IROperand::Value(method_ptr),
+                    arguments: all_args.into_iter().map(IROperand::Value).collect(),
+                    return_type: ret,
+                    param_types,
+                    original: Some(method_name.to_string()),
+                }))?;
+                return Ok(target);
+            } else {
+                eprintln!(
+                    "DEBUG: get_protocol_method_index returned None for {}.{}",
+                    proto, method_name
+                );
+            }
         }
 
         // Fallback genérico
@@ -435,6 +506,11 @@ impl IRBuilder {
     pub fn lower_program(&mut self, program: &Program) -> Result<IRModule, IRLoweringError> {
         self.reset();
         self.module = IRModule::new(IRNaming::module_name("lowered"));
+
+        self.protocol_methods.insert(
+            "Iterable".to_string(),
+            vec!["next".to_string(), "current".to_string()],
+        );
 
         // Extraer protocolos primero
         for decl in &program.declarations {

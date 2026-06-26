@@ -506,6 +506,33 @@ impl TypeEnvironment {
             (NormalizedType::Named(type_name), NormalizedType::Protocol(proto_name)) => {
                 self.type_implements(type_name, proto_name)
             }
+            // NUEVO: Tipo que implementa Iterable es compatible con Iterable<T>
+            (NormalizedType::Named(type_name), NormalizedType::Iterable(expected_element)) => {
+                if !self.type_implements(type_name, "Iterable") {
+                    return false;
+                }
+                // Verificar que current() retorne un tipo compatible con expected_element
+                if let Some(type_info) = self.get_type(type_name) {
+                    if let Some(current_method) =
+                        type_info.methods.iter().find(|m| m.name == "current")
+                    {
+                        if let Some(ret_type_ref) = &current_method.return_type {
+                            if let Ok(ret_type) = self.validate_type_reference(ret_type_ref) {
+                                return self.is_compatible(&ret_type, expected_element);
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            // NUEVO: Iterable<T> es compatible con Iterable<U> si T es compatible con U
+            (NormalizedType::Iterable(from_inner), NormalizedType::Iterable(to_inner)) => {
+                self.is_compatible(from_inner, to_inner)
+            }
+            // NUEVO: Vector<T> es compatible con Iterable<U> si T es compatible con U
+            (NormalizedType::Vector(from_inner), NormalizedType::Iterable(to_inner)) => {
+                self.is_compatible(from_inner, to_inner)
+            }
             (NormalizedType::Protocol(a), NormalizedType::Protocol(b)) => {
                 if a == b {
                     return true;

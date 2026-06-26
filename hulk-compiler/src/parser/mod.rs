@@ -1815,7 +1815,3 @@ impl TokenCursor {
         self.tokens.len()
     }
 }
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

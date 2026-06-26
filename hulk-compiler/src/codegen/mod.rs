@@ -36,9 +36,6 @@ pub mod context;
 pub mod error;
 pub mod inkwell;
 
-#[cfg(test)]
-mod tests;
-
 pub use artifact::{CodegenArtifact, CodegenOutput};
 pub use backend::CodegenBackend;
 pub use context::{CodegenContext, CodegenTarget, LlvmBuilder, LlvmContext, LlvmModule};

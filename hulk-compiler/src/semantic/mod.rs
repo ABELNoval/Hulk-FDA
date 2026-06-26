@@ -31,13 +31,10 @@ pub mod expression_checker;
 pub mod symbol_table;
 pub mod type_system;
 
-#[cfg(test)]
-mod tests;
-
-#[allow(unused_imports)]
-pub use analyzer::{SemanticAnalyzer, SemanticContext};
 #[allow(unused_imports)]
 pub use crate::utils::errors::semantic::SemanticError;
+#[allow(unused_imports)]
+pub use analyzer::{SemanticAnalyzer, SemanticContext};
 #[allow(unused_imports)]
 pub use symbol_table::SymbolTable;
 #[allow(unused_imports)]

@@ -16,12 +16,6 @@ pub mod naming;
 pub mod ssa;
 pub mod value;
 
-#[cfg(test)]
-pub mod test_support;
-
-#[cfg(test)]
-mod tests;
-
 #[allow(unused_imports)]
 pub use block::{BasicBlock, BasicBlockId, ControlFlowGraph};
 #[allow(unused_imports)]

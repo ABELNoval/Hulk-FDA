@@ -89,9 +89,9 @@ impl Lexer {
             '-' => {
                 if self.peek() == Some('>') {
                     self.advance();
-                    self.make_token("->", TokenType::ThinArrow, start_line, start_col)
+                    self.simple_token(TokenType::ThinArrow)
                 } else {
-                    self.make_token("-", TokenType::Minus, start_line, start_col)
+                    self.simple_token(TokenType::Minus)
                 }
             }
             '*' => self.simple_token(TokenType::Star),
@@ -104,6 +104,7 @@ impl Lexer {
             '&' => self.simple_token(TokenType::Ampersand),
             '|' => {
                 if self.peek() == Some('|') {
+                    self.advance();
                     self.advance();
                     self.simple_token(TokenType::DoublePipe)
                 } else {

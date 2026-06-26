@@ -1231,10 +1231,10 @@ impl SemanticAnalyzer {
     }
 
     fn find_field_type(&self, type_name: &str, field_name: &str) -> Option<NormalizedType> {
-        if let Some(fields) = self.type_fields.get(type_name) {
-            if let Some(ty) = fields.get(field_name) {
-                return Some(ty.clone());
-            }
+        if let Some(fields) = self.type_fields.get(type_name)
+            && let Some(ty) = fields.get(field_name)
+        {
+            return Some(ty.clone());
         }
         // Buscar recursivamente en el padre
         if let Some(parent) = self.type_parents.get(type_name) {

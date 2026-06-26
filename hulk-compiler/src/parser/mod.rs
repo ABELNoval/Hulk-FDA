@@ -659,6 +659,73 @@ impl Parser {
         expr
     }
 
+    fn parse_vector(&mut self, start_span: Span) -> Expr {
+        let mut elements = Vec::new();
+
+        if self.cursor.match_token(&TokenType::RightBracket) {
+            return Expr::vector_literal(vec![], start_span.clone());
+        }
+
+        let first_expr = self.parse_expression();
+
+        // comprehension
+        if self.cursor.match_token(&TokenType::DoublePipe) {
+            let identifier = self.cursor.peek().clone();
+
+            let binding = match &identifier.token_type {
+                TokenType::Identifier(name) => {
+                    self.cursor.advance();
+
+                    name.clone()
+                }
+
+                _ => {
+                    self.error(ParserError::ExpectedIdentifier {
+                        found: identifier.lexeme,
+                    });
+
+                    return first_expr;
+                }
+            };
+
+            if self.expect(TokenType::In).is_err() {
+                self.synchronize();
+
+                return first_expr;
+            }
+
+            let iterable = self.parse_expression();
+
+            let end_span = match self.expect(TokenType::RightBracket) {
+                Ok(token) => token.span,
+
+                Err(_) => iterable.span.clone(),
+            };
+
+            let span = start_span.merge(&end_span);
+
+            return Expr::vector_comprehension(first_expr, binding, iterable, span);
+        }
+
+        // vector normal
+
+        elements.push(first_expr);
+
+        while self.cursor.match_token(&TokenType::Comma) {
+            elements.push(self.parse_expression());
+        }
+
+        let end_span = match self.expect(TokenType::RightBracket) {
+            Ok(token) => token.span,
+
+            Err(_) => elements.last().unwrap().span.clone(),
+        };
+
+        let span = start_span.merge(&end_span);
+
+        Expr::vector_literal(elements, span)
+    }
+
     /// Intenta parsear una lambda desde un `(` ya consumido.
     /// Precondición: el token actual DEBE ser `(` (ya consumido por el llamador).
     ///
@@ -743,81 +810,11 @@ impl Parser {
         Some(Expr::lambda(parameters, return_type, body, span))
     }
 
-    fn parse_vector(&mut self, start_span: Span) -> Expr {
-        let mut elements = Vec::new();
-
-        if self.cursor.match_token(&TokenType::RightBracket) {
-            return Expr::vector_literal(vec![], start_span.clone());
-        }
-
-        let first_expr = self.parse_expression();
-
-        // comprehension
-        if self.cursor.match_token(&TokenType::DoublePipe) {
-            let identifier = self.cursor.peek().clone();
-
-            let binding = match &identifier.token_type {
-                TokenType::Identifier(name) => {
-                    self.cursor.advance();
-
-                    name.clone()
-                }
-
-                _ => {
-                    self.error(ParserError::ExpectedIdentifier {
-                        found: identifier.lexeme,
-                    });
-
-                    return first_expr;
-                }
-            };
-
-            if self.expect(TokenType::In).is_err() {
-                self.synchronize();
-
-                return first_expr;
-            }
-
-            let iterable = self.parse_expression();
-
-            let end_span = match self.expect(TokenType::RightBracket) {
-                Ok(token) => token.span,
-
-                Err(_) => iterable.span.clone(),
-            };
-
-            let span = start_span.merge(&end_span);
-
-            return Expr::vector_comprehension(first_expr, binding, iterable, span);
-        }
-
-        // vector normal
-
-        elements.push(first_expr);
-
-        while self.cursor.match_token(&TokenType::Comma) {
-            elements.push(self.parse_expression());
-        }
-
-        let end_span = match self.expect(TokenType::RightBracket) {
-            Ok(token) => token.span,
-
-            Err(_) => elements.last().unwrap().span.clone(),
-        };
-
-        let span = start_span.merge(&end_span);
-
-        Expr::vector_literal(elements, span)
-    }
-
     fn parse_primary(&mut self) -> Expr {
         if self.cursor.check(&TokenType::LeftParen) {
-            // Intentar lambda primero: (params) => body
             if let Some(lambda) = self.try_parse_lambda() {
                 return lambda;
             }
-
-            // No es lambda, es grouping
             let open_token = self.cursor.advance();
             let expr = self.parse_expression();
             if self.cursor.check(&TokenType::RightParen) {
@@ -999,15 +996,11 @@ impl Parser {
                         }
                     }
                 }
-                let close = match self.expect(TokenType::RightParen) {
+                match self.expect(TokenType::RightParen) {
                     Ok(t) => t.span,
                     Err(_) => return TypeReference::new("ErrorType".to_string(), start_span),
                 };
-                // Esperar -> (Minus + Greater)
-                if self.expect(TokenType::Minus).is_err() {
-                    return TypeReference::new("ErrorType".to_string(), start_span);
-                }
-                if self.expect(TokenType::Greater).is_err() {
+                if self.expect(TokenType::ThinArrow).is_err() {
                     return TypeReference::new("ErrorType".to_string(), start_span);
                 }
                 let ret = self.parse_type_reference();

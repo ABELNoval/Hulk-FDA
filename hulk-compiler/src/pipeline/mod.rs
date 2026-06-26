@@ -25,7 +25,7 @@
 use crate::codegen::{
     CodegenArtifact, CodegenBackend, CodegenContext, CodegenTarget, LlvmInkwellBackend,
 };
-use crate::ir::{IRBuilder, IRModule, run_ssa_renaming};
+use crate::ir::{IRBuilder, IRModule};
 use crate::lexer::{Lexer, Token};
 use crate::parser::{Parser, Program};
 use crate::semantic::SemanticAnalyzer;

@@ -13,7 +13,6 @@ pub mod instruction;
 pub mod lowering;
 pub mod module;
 pub mod naming;
-pub mod ssa;
 pub mod value;
 
 #[allow(unused_imports)]
@@ -26,7 +25,5 @@ pub use lowering::{IRBuilder, IRLoweringContext, IRLoweringError, IRLoweringResu
 pub use module::{IRFunction, IRModule};
 #[allow(unused_imports)]
 pub use naming::{IRNaming, SSAValueGenerator};
-#[allow(unused_imports)]
-pub use ssa::run_ssa_renaming;
 #[allow(unused_imports)]
 pub use value::{IRValue, IRValueId, IRValueKind};

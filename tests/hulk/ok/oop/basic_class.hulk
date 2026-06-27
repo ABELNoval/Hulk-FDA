@@ -12,3 +12,5 @@ let p = new Point(3, 4) in {
     if (p.getY() == 4) print("ok") else print("fail");
     if (p.sum() == 7) print("ok") else print("fail");
 };
+
+

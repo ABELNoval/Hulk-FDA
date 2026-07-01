@@ -12,8 +12,6 @@ pub struct CodegenArtifact {
     pub output: CodegenOutput,
 }
 
-// Person A owns the artifact type because it is the shared output wrapper
-// produced by the backend and consumed by tests or later pipeline stages.
 impl CodegenArtifact {
     pub fn text(target: CodegenTarget, text: impl Into<String>) -> Self {
         Self {

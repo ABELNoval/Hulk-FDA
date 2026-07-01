@@ -21,8 +21,6 @@ pub enum CodegenError {
     },
 }
 
-// Person A owns the shared error type so both the backend setup and the
-// lowering implementation can report failures in the same format.
 impl fmt::Display for CodegenError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

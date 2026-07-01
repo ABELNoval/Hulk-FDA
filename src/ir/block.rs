@@ -1,9 +1,3 @@
-// Persona 2 — Control Flow Graph and basic blocks
-// Assigned: Persona2
-// Responsibilities: implementación del CFG, creación/gestión de bloques básicos,
-// seguimiento de predecesores/sucesores y utilidades de validación.
-// Subtasks relevantes: APIs de creación/lookup/insert, traversals y validaciones.
-
 use super::instruction::IRInstruction;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -1,10 +1,4 @@
-// Persona 1 — SSA IR design and core representation
-// Assigned: Persona1
-// Responsibilities: Diseño de tipos núcleo (Module, Function), estructura de funciones
-// y la representación de alto nivel que usarán SSA y el backend.
-// Subtasks relevantes: definir `IRModule`, `IRFunction`, API de builder.
-
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 use super::block::{BasicBlock, BasicBlockId};
 use super::instruction::IRInstructionKind;

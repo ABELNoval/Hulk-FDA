@@ -22,7 +22,6 @@ use crate::semantic::expression_checker::ExpressionChecker;
 use crate::semantic::symbol_table::{SymbolInfo, SymbolTable};
 use crate::semantic::type_system::NormalizedType;
 use crate::semantic::type_system::TypeEnvironment;
-use crate::utils::Span;
 use crate::utils::errors::semantic::SemanticError;
 
 type SemanticResult<T> = Result<T, SemanticError>;

@@ -1,8 +1,3 @@
-// Persona 1 — SSA IR design and core representation
-// Assigned: Persona1
-// Responsibilities: modelado de valores SSA, identificadores únicos y metadatos
-// (tipos, span). Requisito para operaciones SSA y phi nodes.
-
 use crate::utils::errors::span::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

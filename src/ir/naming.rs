@@ -1,8 +1,3 @@
-// Persona 1 — SSA IR design and core representation
-// Assigned: Persona1
-// Responsibilities: definir convenciones de nombres para valores SSA, bloques
-// y módulos. Estas reglas facilitan la lectura, debug y comparación en tests.
-
 pub struct IRNaming;
 
 impl IRNaming {

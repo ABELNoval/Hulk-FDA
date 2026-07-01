@@ -1,8 +1,3 @@
-// Persona 1 — SSA IR design and core representation
-// Assigned: Persona1
-// Responsibilities: definir instrucciones, operandos y representación de operaciones
-// aritméticas y de control (incluyendo phi nodes). Mantener compatibilidad con SSA.
-
 use super::block::BasicBlockId;
 use super::value::IRValueId;
 

@@ -1,5 +1,3 @@
-use std::fmt::format;
-
 use super::DisplayError;
 use super::span::Span;
 
@@ -329,7 +327,7 @@ impl DisplayError for SemanticError {
             SemanticError::InvalidTarget { .. } => "E2017",
             // Funciones
             SemanticError::UndeclaredFunction { .. } => "E2020",
-            /// Función ya declarada
+            // Función ya declarada
             SemanticError::FunctionAlreadyDeclared { .. } => "E2021",
             SemanticError::WrongArgumentCount { .. } => "E2022",
             SemanticError::ArgumentTypeMismatch { .. } => "E2023",
@@ -367,14 +365,10 @@ impl DisplayError for SemanticError {
             SemanticError::NonConstantExpression { .. } => "E2081",
             SemanticError::UnsupportedExpression { .. } => "E2082",
             SemanticError::UnsupportedFeature { .. } => "E2099",
-            SemanticError::UndeclaredProtocol { name } => "E2100",
-            SemanticError::ProtocolAlreadyDeclared {
-                name,
-                first_line,
-                first_column,
-            } => "E2101",
-            SemanticError::UndefinedFunction { name } => "E2102",
-            SemanticError::UnknownType { name } => "E2103",
+            SemanticError::UndeclaredProtocol { .. } => "E2100",
+            SemanticError::ProtocolAlreadyDeclared { .. } => "E2101",
+            SemanticError::UndefinedFunction { .. } => "E2102",
+            SemanticError::UnknownType { .. } => "E2103",
         }
     }
 

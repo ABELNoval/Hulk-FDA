@@ -304,6 +304,10 @@ pub enum SemanticError {
     UnknownType {
         name: String,
     },
+    Located {
+        error: Box<SemanticError>,
+        span: Span,
+    },
 }
 
 impl DisplayError for SemanticError {
@@ -369,6 +373,7 @@ impl DisplayError for SemanticError {
             SemanticError::ProtocolAlreadyDeclared { .. } => "E2101",
             SemanticError::UndefinedFunction { .. } => "E2102",
             SemanticError::UnknownType { .. } => "E2103",
+            SemanticError::Located { error, .. } => error.code(),
         }
     }
 
@@ -665,6 +670,7 @@ impl DisplayError for SemanticError {
             SemanticError::UndeclaredProtocol { name } => {
                 format!("protocolo no declarado: {}", name)
             }
+            SemanticError::Located { error, .. } => error.message(),
             SemanticError::ProtocolAlreadyDeclared {
                 name,
                 first_line,
@@ -730,12 +736,24 @@ impl DisplayError for SemanticError {
             SemanticError::SelfOutsideMethod => {
                 Some("self solo es válido dentro de métodos de una clase".to_string())
             }
+            SemanticError::Located { error, .. } => error.help(),
             _ => None,
         }
     }
 }
 
 impl SemanticError {
+    pub fn with_fallback_span(self, span: Span) -> Self {
+        if self.location().is_some() {
+            self
+        } else {
+            SemanticError::Located {
+                error: Box::new(self),
+                span,
+            }
+        }
+    }
+
     /// Retorna una ubicación best-effort para errores semánticos con posición explícita.
     pub fn location(&self) -> Option<(usize, usize)> {
         match self {
@@ -758,6 +776,12 @@ impl SemanticError {
                 first_column,
                 ..
             } => Some((*first_line, *first_column)),
+            SemanticError::ProtocolAlreadyDeclared {
+                first_line,
+                first_column,
+                ..
+            } => Some((*first_line, *first_column)),
+            SemanticError::Located { span, .. } => Some((span.start_line, span.start_column)),
             _ => None,
         }
     }

@@ -1,19 +1,3 @@
-// =============================================================================
-// Semantic Analyzer (Analizador Semántico Principal)
-// =============================================================================
-//
-// Responsabilidad del Líder:
-// - Orquestar la ejecución de los análisis semánticos
-// - Coordinar Symbol Table, Type System, Expression Checker
-// - Verificar declaraciones (funciones, tipos, protocolos)
-// - Verificar expresión de entrada
-// - Recopilar y reportar errores
-// - Mantener contexto semántico global
-//
-// Esta es la interfaz pública del módulo semántico.
-//
-// =============================================================================
-
 use crate::parser::ast::{
     DeclarationKind, Expr, ExprKind, FunctionDeclaration, TypeMember, TypeReferenceKind,
 };
@@ -22,16 +6,11 @@ use crate::semantic::expression_checker::ExpressionChecker;
 use crate::semantic::symbol_table::{SymbolInfo, SymbolTable};
 use crate::semantic::type_system::NormalizedType;
 use crate::semantic::type_system::TypeEnvironment;
+use crate::utils::Span;
 use crate::utils::errors::semantic::SemanticError;
 
 type SemanticResult<T> = Result<T, SemanticError>;
 
-/// Contexto semántico global
-///
-/// Contiene toda la información acumulada durante el análisis semántico:
-/// - Tabla de símbolos con scopes
-/// - Entorno de tipos (tipos, protocolos)
-/// - Errores encontrados
 pub struct SemanticContext {
     /// Tabla de símbolos con gestión de scopes
     pub symbols: SymbolTable,
@@ -99,6 +78,7 @@ pub struct SemanticAnalyzer {
         std::collections::HashMap<String, std::collections::HashMap<String, NormalizedType>>,
     type_parents: std::collections::HashMap<String, String>,
     current_method_context: Option<(String, String)>,
+    current_error_span: Option<Span>,
 }
 
 impl SemanticAnalyzer {
@@ -115,6 +95,7 @@ impl SemanticAnalyzer {
             type_fields: std::collections::HashMap::new(),
             type_parents: std::collections::HashMap::new(),
             current_method_context: None,
+            current_error_span: None,
         }
     }
 
@@ -154,6 +135,7 @@ impl SemanticAnalyzer {
     fn check_declarations(&mut self, _program: &Program) -> SemanticResult<()> {
         // First pass: register types and protocols so functions can reference them
         for decl in &_program.declarations {
+            self.current_error_span = Some(decl.span.clone());
             match &decl.kind {
                 DeclarationKind::Type(td) => {
                     // 1. Extraer padre primero
@@ -647,6 +629,7 @@ impl SemanticAnalyzer {
     /// Basic recursive expression analyzer that uses `ExpressionChecker` and
     /// available symbol/type information to validate common constructs.
     fn analyze_expr(&mut self, expr: &Expr) -> Result<NormalizedType, SemanticError> {
+        self.current_error_span = Some(expr.span.clone());
         let ty = match &expr.kind {
             ExprKind::Literal(literal) => {
                 let et = self.context.expression_checker.check_literal(literal)?;
@@ -1309,7 +1292,12 @@ impl SemanticAnalyzer {
 
     /// Reporta un error
     pub fn report_error(&mut self, error: SemanticError) {
-        self.context.push_error(error);
+        if let Some(span) = &self.current_error_span {
+            self.context
+                .push_error(error.with_fallback_span(span.clone()));
+        } else {
+            self.context.push_error(error);
+        }
     }
 
     pub fn take_expr_types(&mut self) -> std::collections::HashMap<usize, NormalizedType> {

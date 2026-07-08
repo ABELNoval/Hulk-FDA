@@ -9,15 +9,7 @@
 // - Instruction Selection: elegir las instrucciones apropiadas
 // - Register Allocation: asignar variables a registros
 // - Instruction Scheduling: ordenar instrucciones óptimamente
-// - Emisión del código final
-//
-// Posibles objetivos (backends):
-// - Código máquina nativo (x86-64, ARM, RISC-V)
-// - LLVM IR (para usar el backend de LLVM)
-// - Bytecode para una máquina virtual
-// - WebAssembly (WASM)
-// - C code (transpilación)
-// - Intérprete directo (tree-walking interpreter)
+// - Emisión de LLVM IR
 //
 // Consideraciones:
 // - Convenciones de llamada (calling conventions)
@@ -38,6 +30,6 @@ pub mod inkwell;
 
 pub use artifact::{CodegenArtifact, CodegenOutput};
 pub use backend::CodegenBackend;
-pub use context::{CodegenContext, CodegenTarget, LlvmBuilder, LlvmContext, LlvmModule};
+pub use context::{CodegenContext, CodegenTarget};
 pub use error::{CodegenError, CodegenResult};
 pub use inkwell::LlvmInkwellBackend;
